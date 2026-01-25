@@ -1,0 +1,25 @@
+Metadata-Version: 2.4
+Name: pybacktest
+Version: 0.1.0
+Summary: A Python backtesting framework
+Author-email: sciencemj <sciencemj.park@gmail.com>
+License: MIT
+Project-URL: Repository, https://github.com/sciencemj/pybacktest
+Keywords: backtesting,trading,finance
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: pandas>=1.3.0
+Requires-Dist: numpy>=1.21.0
+Requires-Dist: matplotlib>=3.4.0
+Requires-Dist: yfinance>=0.1.63
+Requires-Dist: pydantic>=2.12.5
+Dynamic: license-file
+
+# Pybacktest
+This is python project for backtesting!

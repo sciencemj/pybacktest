@@ -1,59 +1,21 @@
 import yfinance as yf
+from pybacktest_sciencemj.models import Stock, Action, Portfolio
+from pybacktest_sciencemj.strategy import Strategy
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from collections import defaultdict
-from typing import Callable
-
-class Stock:
-    def __init__(self, ticker: str, start: str, end: str):
-        self.ticker = ticker
-        self.start = start
-        self.end = end
-        self.data = self.fetch_data()
-        self.dates = self.data.index.to_list()
-    
-    def fetch_data(self) -> pd.DataFrame:
-        data = yf.download(self.ticker, start=self.start, end=self.end)
-        data = self.data_processing(data=data)
-        return data
-    
-    def data_processing(self, data: pd.DataFrame) -> pd.DataFrame:
-        data.columns = ['Close', 'High', 'Low', 'Open', 'Volume'] # Rename
-        data['Change'] = data['Close'] - data['Close'].shift(1) # Daily Change
-        data['Change_Pct'] = data['Change'] / data['Close'].shift(1) * 100 # Daily Change Percentage
-        return data
-    
-    def plot_data(self, figsize: tuple[int, int]=(14, 7)):
-        plt.figure(figsize=figsize)
-        plt.plot(self.data.index, self.data['Close'], label='Close Price')
-        plt.title(f'{self.ticker} Stock Price')
-        plt.xlabel('Date')
-        plt.ylabel('Price')
-        plt.legend()
-        plt.grid()
-        plt.show()
-
-class Strategy:
-    def __init__(self, name: str, func: Callable):
-        self.name = name
-        self.func = func
-    
-    def apply(self, portfolio: dict, stocks: list[Stock], date: pd.Timestamp) -> dict:
-        return self.func(portfolio, stocks, date)
-    
-    def get_name(self) -> str:
-        return self.name
+from typing import Callable, Tuple, Optional, List
 
 class Backtest:
-    def __init__(self, stocks: list[Stock], strategies: list[Strategy], initial_capital: float = 10000.0):
+    def __init__(self, stocks: List[Stock], strategies: List[Strategy], initial_capital: float = 10000.0):
         self.stocks = stocks
         self.strategies = strategies
         self.initial_capital = initial_capital
         self.trades = defaultdict(list)
         self.dates = self.get_common_dates()
         self.value_over_time = defaultdict(dict)
-        self.portfolio = {'money': initial_capital} | {stock.ticker: 0 for stock in stocks} 
+        self.portfolio:Portfolio = Portfolio(initial_capital, [stock.ticker for stock in stocks])
 
     def get_protfolio_value(self, date: str) -> float:
         '''
@@ -64,10 +26,10 @@ class Backtest:
         :return: total portfolio value at the given date
         :rtype: float
         '''
-        total_value = self.portfolio['money']
+        total_value = self.portfolio.money
         for stock in self.stocks:
-            if stock.ticker in self.portfolio:
-                total_value += self.portfolio[stock.ticker] * stock.data.loc[pd.to_datetime(date), 'Close']
+            if stock.ticker in self.portfolio.tickers:
+                total_value += self.portfolio.tickers[stock.ticker] * stock.data.loc[pd.to_datetime(date), 'Close']
         return total_value
 
     def get_common_dates(self) -> pd.DatetimeIndex:
@@ -94,58 +56,54 @@ class Backtest:
         if end_date: run_dates = self.dates[self.dates <= pd.to_datetime(end_date)]
         else: run_dates = self.dates
         for strategy in self.strategies:
-            self.portfolio = {'money': self.initial_capital} | {stock.ticker: 0 for stock in self.stocks}
+            self.portfolio =  Portfolio(self.initial_capital, [stock.ticker for stock in self.stocks])
             for date in run_dates:
+                stock_data = [stock.cut_data(stock.start, date) for stock in self.stocks]
                 action = strategy.apply(self.portfolio, self.stocks, date)
                 self.execute_action(action, date, strategy)
                 self.value_over_time[strategy][date] = self.get_protfolio_value(date)
     
-    def execute_action(self, action: dict, date: pd.Timestamp, strategy: Strategy):
+    def execute_action(self, actions: list[Action], date: pd.Timestamp, strategy: Strategy):
         '''
         action: {
             'AAPL': {'type': 'buy', 'quantity': 10, price: 150.0},
             'MSFT': {'type': 'sell', 'quantity': 5, price: 250.0}
         }
         '''
-        for stock_ticker, trade in action.items():
-            stock = next((s for s in self.stocks if s.ticker == stock_ticker), None)
-            if stock is None:
-                continue
-            
-            price = trade.get('price', stock.data.loc[date, 'Close'])
-            if trade['type'] == 'buy':
-                quantity = trade['quantity']
-                cost = price * quantity
-                if self.portfolio['money'] >= cost:
-                    self.portfolio['money'] -= cost
-                    self.portfolio[stock_ticker] += quantity
-                    self.trades[strategy].append({'date': date, 'ticker': stock_ticker, 'type': 'buy', 'quantity': quantity, 'price': price})
+        for action in actions:
+            if action.type == 'buy':
+                cost = action.price * action.quantity
+                if self.portfolio.money >= cost:
+                    self.portfolio.money -= cost
+                    self.portfolio.tickers[action.ticker] += action.quantity
+                    self.trades[strategy].append({'date': date, 'ticker': action.ticker, 'type': 'buy', 'quantity': action.quantity, 'price': action.price})
                 else:
-                    raise ValueError(f"Not enough money to buy {quantity} shares of {stock_ticker} at {price} on {date}! Check your strategy.")
-            elif trade['type'] == 'sell':
-                quantity = trade['quantity']
-                if self.portfolio[stock_ticker] >= quantity:
-                    revenue = price * quantity
-                    self.portfolio['money'] += revenue
-                    self.portfolio[stock_ticker] -= quantity
-                    self.trades[strategy].append({'date': date, 'ticker': stock_ticker, 'type': 'sell', 'quantity': quantity, 'price': price})
+                    raise ValueError(f"Not enough money to buy {action.quantity} shares of {action.ticker} at {action.price} on {date}! Check your strategy.")
+            elif action.type == 'sell':
+                if self.portfolio.tickers[action.ticker] >= action.quantity:
+                    revenue = action.price * action.quantity
+                    self.portfolio.money += revenue
+                    self.portfolio.tickers[action.ticker] -= action.quantity
+                    self.trades[strategy].append({'date': date, 'ticker': action.ticker, 'type': 'sell', 'quantity': action.quantity, 'price': action.price})
                 else:
-                    raise ValueError(f"Not enough shares to sell {quantity} of {stock_ticker} on {date}! Check your strategy.")
+                    raise ValueError(f"Not enough shares to sell {action.quantity} of {action.ticker} on {date}! Check your strategy.")
 
-    def plot_performance(self, figsize: tuple[int, int]=(14, 7), show_trades: bool=True, subplot: tuple[int, int]=None):
+    def plot_performance(self, figsize: Tuple[int, int]=(14, 7), show_trades: bool=True, subplot: Optional[Tuple[int, int]]=None, instance_show=True):
         '''
         plot_performance의 Docstring
         
         :param self: 설명
         :param figsize: Size of the figure
-        :type figsize: (int | int)
+        :type figsize: Tuple[int, int]
         :param show_trades: show trade points on the plot (buy/sell)
         :type show_trades: bool
         :param subplot: If specified, creates subplots for each strategy with given (rows, cols)
-        :type subplot: (int | int) | None
+        :type subplot: Optional[Tuple[int, int]]
+        :param instance_show: If False do not show plot when function ended
+        :type instance_show: bool
         '''
         if not subplot:
-            plt.figure(figsize=figsize)
+            if instance_show: plt.figure(figsize=figsize)
             for strategy in self.strategies:
                 dates = list(self.value_over_time[strategy].keys())
                 values = list(self.value_over_time[strategy].values())
@@ -161,9 +119,9 @@ class Backtest:
             plt.ylabel('Portfolio Value')
             plt.legend()
             plt.grid()
-            plt.show()
+            if instance_show: plt.show()
         else:
-            plt.figure(figsize=figsize)
+            if instance_show: plt.figure(figsize=figsize)
             for i, strategy in enumerate(self.strategies):
                 plt.subplot(subplot[0], subplot[1], i+1)
                 dates = list(self.value_over_time[strategy].keys())
@@ -180,4 +138,4 @@ class Backtest:
                 plt.ylabel('Portfolio Value')
                 plt.legend()
                 plt.grid()
-                plt.show()
+                if instance_show: plt.show()
