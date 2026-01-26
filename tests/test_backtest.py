@@ -2,7 +2,8 @@ import pytest
 import pandas as pd
 from src.pybacktest_sciencemj.backtest import Backtest
 from src.pybacktest_sciencemj.models import Stock, Action
-from src.pybacktest_sciencemj.strategy import Strategy
+from src.pybacktest_sciencemj.strategy import Strategy, StrategyWrapper
+import json
 
 def test_get_portfolio_value():
     stock_a = Stock('360750.KS', start='2022-01-01', end='2022-01-10', fetch=False)
@@ -16,9 +17,9 @@ def test_get_portfolio_value():
     stock_b.data = data_b
     
     backtest = Backtest([stock_a, stock_b], [], initial_capital=1000.0)
-    backtest.portfolio.money = 500.0
-    backtest.portfolio.tickers[stock_a.ticker] = 3
-    backtest.portfolio.tickers[stock_b.ticker] = 2
+    backtest.portfolio.cash = 500.0
+    backtest.portfolio.stock_count[stock_a.ticker] = 3
+    backtest.portfolio.stock_count[stock_b.ticker] = 2
     
     expected_value = (500.0 + 
                         3 * stock_a.data.loc[pd.to_datetime('2022-01-10'), 'Close'] + 
@@ -42,8 +43,8 @@ def test_execute_action():
     
     backtest.execute_action([action], pd.to_datetime('2022-01-02'), Strategy('Test Strategy', lambda p, s, d: {}))
     
-    assert backtest.portfolio.tickers['360750.KS'] == 5
-    assert backtest.portfolio.money == 1000.0 - (5 * 100.0)
+    assert backtest.portfolio.stock_count['360750.KS'] == 5
+    assert backtest.portfolio.cash == 1000.0 - (5 * 100.0)
     
     action_sell = {
         'ticker': '360750.KS', 'type': 'sell', 'quantity': 3, 'price': 102.0
@@ -52,5 +53,13 @@ def test_execute_action():
     
     backtest.execute_action([action_sell], pd.to_datetime('2022-01-03'), Strategy('Test Strategy', lambda p, s, d: {}))
     
-    assert backtest.portfolio.tickers['360750.KS'] == 2
-    assert backtest.portfolio.money == 1000.0 - (5 * 100.0) + (3 * 102.0)
+    assert backtest.portfolio.stock_count['360750.KS'] == 2
+    assert backtest.portfolio.cash == 1000.0 - (5 * 100.0) + (3 * 102.0)
+
+def test_strategy_init():
+    with open('strategy_test_format.json', 'r') as json_file:
+        test_data = json.load(json_file)
+    strategy = StrategyWrapper.model_validate(test_data)
+    assert strategy['AAPL'].buy.by == ["average", "Close"]
+    assert strategy['TQQQ'].buy.ticker == "AAPL"
+    assert strategy['TQQQ'].sell.amount == None

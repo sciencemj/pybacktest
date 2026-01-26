@@ -53,6 +53,34 @@ class Action(BaseModel):
     price: float
 
 class Portfolio:
-    def __init__(self, money: float, tickers: List[str]):
-        self.money = money
-        self.tickers = {ticker: 0 for ticker in tickers}
+    def __init__(self, cash: float, tickers: List[str]):
+        self.cash = cash
+        self.tickers = tickers
+        self.stock_count = {ticker: 0 for ticker in tickers}
+        self.buy_value = {ticker: 0 for ticker in tickers}
+
+    def update(self, ticker: str, amount: int, price: float) -> None:
+        '''
+        update for stock
+        
+        :param self: 설명
+        :param ticker: ticker string
+        :type ticker: str
+        :param amount: +- amount of stock
+        :type amount: int
+        :param price: buy price of stock
+        :type price: float
+        '''
+        if amount > 0:
+            current_value = self.stock_count[ticker] * self.buy_value[ticker]
+            cost = amount * price
+            updated_value = current_value + cost
+            self.cash -= cost
+            self.stock_count[ticker] += amount
+            self.buy_value[ticker] = updated_value/self.stock_count[ticker]
+        if amount < 0:
+            rev = -amount * price
+            self.cash += rev
+            self.stock_count[ticker] += amount
+            if self.stock_count[ticker] <= 0: self.buy_value[ticker] = 0
+        
