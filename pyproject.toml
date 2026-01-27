@@ -7,14 +7,13 @@ name = "pybacktest"
 version = "0.1.0"
 description = "A Python backtesting framework"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [{name = "sciencemj", email = "sciencemj.park@gmail.com"}]
 keywords = ["backtesting", "trading", "finance"]
 classifiers = [
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
 ]

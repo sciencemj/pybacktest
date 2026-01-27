@@ -8,7 +8,6 @@ src/pybacktest.egg-info/requires.txt
 src/pybacktest.egg-info/top_level.txt
 src/pybacktest_sciencemj/__init__.py
 src/pybacktest_sciencemj/backtest.py
-src/pybacktest_sciencemj/example.py
 src/pybacktest_sciencemj/models.py
 src/pybacktest_sciencemj/strategy.py
 tests/test_backtest.py
