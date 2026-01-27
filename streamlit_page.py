@@ -215,7 +215,7 @@ with tab2:
     with col21:
         with st.form("backtest_form"):
             col31, col32 = st.columns([1,1])
-            start = col31.date_input('시작일')
+            start = col31.date_input('시작일', value='2025-01-01')
             end = col32.date_input('종료일')
             initial_cash = st.number_input('초기 자금', value=10000)
             run_button = st.form_submit_button('백테스트 시작!', use_container_width=True)
