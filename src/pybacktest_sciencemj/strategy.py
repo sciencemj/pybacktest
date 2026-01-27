@@ -34,6 +34,7 @@ class StrategyManager:
         actions = []
         for ticker, strategy in self.strategies.items():
             actions.extend(self.apply_strategy(ticker, strategy, portfolio, stocks, date))
+        #print(f"actions: {actions}")
         return actions
     
     def get_name(self) -> str:
@@ -56,7 +57,7 @@ class StrategyManager:
             if isinstance(buy.period, int):
                 compare_value = buy_index_data.data[by[1]].rolling(window=buy.period, min_periods=1).mean()
             else: compare_value = buy_index_data.data[by[1]].mean()
-            compare_value = float(compare_value.to_numpy()[-2])
+            compare_value = float(compare_value.to_numpy()[-1])
         elif by[0] == "current":
             compare_value = buy_index_data.data[by[1]].iloc[-1]
         else: raise ValueError("Error While setting compare value")
@@ -83,7 +84,7 @@ class StrategyManager:
             if isinstance(sell.period, int):
                 compare_value = sell_index_data.data[by[1]].rolling(window=sell.period, min_periods=1).mean()
             else: compare_value = sell_index_data.data[by[1]].mean()
-            compare_value = float(compare_value.to_numpy()[-2])
+            compare_value = float(compare_value.to_numpy()[-1])
         elif by[0] == "current":
             compare_value = sell_index_data.data[by[1]].iloc[-1]
         else: raise ValueError("Error While setting compare value")
@@ -108,7 +109,7 @@ class StrategyManager:
     @staticmethod
     def create_action(type: Literal["buy", "sell"], ticker, price, quantity_type: Literal["count", "percent", "value"], quantity, portfolio: Portfolio):
         if quantity_type == "count": pass
-        elif quantity_type == "percent": quantity = math.floor(portfolio.stock_count[ticker] * (quantity/100))
+        elif quantity_type == "percent": quantity =max(math.floor(portfolio.stock_count[ticker] * (quantity/100)), 1)
         elif quantity_type == "value": quantity = quantity // price
         else: raise ValueError("wrong value for quantity_type!")
         if type == "buy":

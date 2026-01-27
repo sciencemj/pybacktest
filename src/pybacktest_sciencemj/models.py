@@ -15,12 +15,12 @@ class Stock:
         self.dates = self.data.index.to_list() if fetch else []
     
     def fetch_data(self) -> pd.DataFrame:
-        data = yf.download(self.ticker, start=self.start, end=self.end, progress=False, group_by='ticker')
+        data = yf.download(self.ticker, start=self.start, end=self.end, progress=False)
         data = self.data_processing(data=data)
         return data
     
     def data_processing(self, data: pd.DataFrame) -> pd.DataFrame:
-        #data.columns = ['Close', 'High', 'Low', 'Open', 'Volume'] # Rename
+        data.columns = ['Close', 'High', 'Low', 'Open', 'Volume'] # Rename
         data['Change'] = data['Close'] - data['Close'].shift(1) # Daily Change
         data['Change_Pct'] = data['Change'] / data['Close'].shift(1) * 100 # Daily Change Percentage
         return data

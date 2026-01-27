@@ -1,0 +1,34 @@
+{
+    "AAPL": {
+        "buy": {
+            "ticker": "AAPL",
+            "by": ["current", "Change_Pct"],
+            "period": false,
+            "criteria": ["percent-change", -0.5],
+            "quantity": ["count", 10]
+        },
+        "sell": {
+            "ticker": "AAPL",
+            "by": ["current", "Close"],
+            "period": false,
+            "criteria": ["profit-rate", 10],
+            "quantity": ["percent", 100]
+        }
+    },
+    "TQQQ": {
+        "buy": {
+            "ticker": "TQQQ",
+            "by": ["average", "Close"],
+            "period": 3,
+            "criteria": ["point", 0.3],
+            "quantity": ["value", 1000]
+        },
+        "sell": {
+            "ticker": "AAPL",
+            "by": ["current", "Change_Pct"],
+            "period": false,
+            "criteria": ["percent-change", -3],
+            "quantity":["percent", 50]
+        }
+    }
+}
