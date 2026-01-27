@@ -1,8 +1,8 @@
 import pytest
 import pandas as pd
 from src.pybacktest_sciencemj.backtest import Backtest
-from src.pybacktest_sciencemj.models import Stock, Action
-from src.pybacktest_sciencemj.strategy import Strategy, StrategyWrapper
+from src.pybacktest_sciencemj.models import Stock, Action, Portfolio
+from src.pybacktest_sciencemj.strategy import Strategy, StrategyWrapper, StrategyManager
 import json
 
 def test_get_portfolio_value():
@@ -60,6 +60,27 @@ def test_strategy_init():
     with open('strategy_test_format.json', 'r') as json_file:
         test_data = json.load(json_file)
     strategy = StrategyWrapper.model_validate(test_data)
-    assert strategy['AAPL'].buy.by == ["average", "Close"]
+    assert strategy['AAPL'].buy.by == ["current", "Close"]
     assert strategy['TQQQ'].buy.ticker == "AAPL"
-    assert strategy['TQQQ'].sell.amount == None
+    assert strategy['TQQQ'].sell.quantity == ["percent", 100]
+
+def test_strategy():
+    with open('strategy_test_format.json', 'r') as json_file:
+        test_data = json.load(json_file)
+    strategy = StrategyManager("AAPL and TQQQ", StrategyWrapper.model_validate(test_data))
+    stock_a = Stock('AAPL', start='2022-01-01', end='2022-01-10', fetch=False)
+    dates = pd.date_range(start='2022-01-01', end='2022-01-10')
+    data_a = pd.DataFrame({'Close': [100, 102, 101, 103, 104, 105, 106, 107, 108, 500]}, index=dates)
+    data_a["Change"] = data_a - data_a.shift(1)
+    data_a["Change_Pct"] = data_a['Close'].pct_change()
+    stock_a.data = data_a
+    stock_b = Stock('TQQQ', start='2022-01-01', end='2022-01-10', fetch=False)
+    data_b = pd.DataFrame({'Close': [100, 102, 101, 103, 104, 105, 106, 107, 108, 109]}, index=dates)
+    data_b["Change"] = data_b - data_b.shift(1)
+    data_b["Change_Pct"] = data_b['Close'].pct_change()
+    stock_b.data = data_b
+    stocks = [stock_a, stock_b]
+    actions = strategy.apply(Portfolio(1000000, ["AAPL", "TQQQ"]), stocks, pd.to_datetime("2022-01-10"))
+    print(actions[0].model_dump_json())
+    assert actions[0].type == "buy"
+    assert actions[0].price == 500
