@@ -1,7 +1,7 @@
 import streamlit as st
-from pybacktest_sciencemj.backtest import Backtest
-from pybacktest_sciencemj.models import Stock
-from pybacktest_sciencemj.strategy import StrategyManager, StrategyWrapper
+from pybacktest.backtest import Backtest
+from pybacktest.models import Stock
+from pybacktest.strategy import StrategyManager, StrategyWrapper
 import json
 import pandas as pd
 

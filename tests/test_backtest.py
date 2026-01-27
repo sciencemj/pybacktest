@@ -1,8 +1,8 @@
 import pytest
 import pandas as pd
-from src.pybacktest_sciencemj.backtest import Backtest
-from src.pybacktest_sciencemj.models import Stock, Action, Portfolio
-from src.pybacktest_sciencemj.strategy import Strategy, StrategyWrapper, StrategyManager
+from src.pybacktest.backtest import Backtest
+from src.pybacktest.models import Stock, Action, Portfolio
+from src.pybacktest.strategy import Strategy, StrategyWrapper, StrategyManager
 import json
 
 def test_get_portfolio_value():

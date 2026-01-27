@@ -1,1 +1,1 @@
-pybacktest_sciencemj
+pybacktest

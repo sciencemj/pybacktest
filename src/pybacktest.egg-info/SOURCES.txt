@@ -1,13 +1,13 @@
 LICENSE
 README.md
 pyproject.toml
+src/pybacktest/__init__.py
+src/pybacktest/backtest.py
+src/pybacktest/models.py
+src/pybacktest/strategy.py
 src/pybacktest.egg-info/PKG-INFO
 src/pybacktest.egg-info/SOURCES.txt
 src/pybacktest.egg-info/dependency_links.txt
 src/pybacktest.egg-info/requires.txt
 src/pybacktest.egg-info/top_level.txt
-src/pybacktest_sciencemj/__init__.py
-src/pybacktest_sciencemj/backtest.py
-src/pybacktest_sciencemj/models.py
-src/pybacktest_sciencemj/strategy.py
 tests/test_backtest.py

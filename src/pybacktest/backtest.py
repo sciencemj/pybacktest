@@ -1,6 +1,6 @@
 import yfinance as yf
-from pybacktest_sciencemj.models import Stock, Action, Portfolio
-from pybacktest_sciencemj.strategy import StrategyManager
+from pybacktest.models import Stock, Action, Portfolio
+from pybacktest.strategy import StrategyManager
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt

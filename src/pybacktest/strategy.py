@@ -1,5 +1,5 @@
 from pydantic import BaseModel, RootModel
-from pybacktest_sciencemj.models import Action, Stock, Portfolio
+from pybacktest.models import Action, Stock, Portfolio
 import pandas as pd
 from typing import Callable, List, Union, Optional, Literal, Dict, Tuple
 import math
