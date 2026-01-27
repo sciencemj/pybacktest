@@ -71,7 +71,9 @@ class StrategyManager:
         elif crit[0] == "profit-rate":
             criteria *= (100 + crit[1])/100
         else: raise ValueError(f"you got wrong criteria {crit[0]}")
-        if crit[1] <= 0:
+        if crit[0] != "percent-change" and criteria == 0:
+            actions.append(StrategyManager.create_action("buy", ticker, price, buy.quantity[0], buy.quantity[1], portfolio))
+        elif crit[1] <= 0:
             if compare_value <= criteria:
                 actions.append(StrategyManager.create_action("buy", ticker, price, buy.quantity[0], buy.quantity[1], portfolio))
         else:

@@ -80,6 +80,9 @@ def input_strategy_details(key_prefix, default_ticker, saved_data=None):
     def_qty_type = saved_qty[0]
     def_qty_val = float(saved_qty[1])
 
+    # Trade_as 설정 추출
+    def_trade_as = saved_data.get('trade_as', "Close") if saved_data else "Close"
+
     # --- UI 구성 ---
     col1, col2 = st.columns(2)
     with col1:
@@ -90,12 +93,15 @@ def input_strategy_details(key_prefix, default_ticker, saved_data=None):
         # index 찾기 (selectbox 기본값 설정을 위해)
         opts_agg = ["current", "average"]
         opts_field = ["Close", "Change_Pct", "Change", "Open", "High", "Low"]
+        opts_trade_as = ["Close", "Open", "High", "Low"]
         
         idx_agg = opts_agg.index(def_by_agg) if def_by_agg in opts_agg else 0
         idx_field = opts_field.index(def_by_field) if def_by_field in opts_field else 0
+        idx_trade_as = opts_trade_as.index(def_trade_as) if def_trade_as in opts_trade_as else 0
         
         by_agg = c1.selectbox("집계 방식", opts_agg, index=idx_agg, key=f"{key_prefix}_by_agg")
         by_field = c2.selectbox("필드", opts_field, index=idx_field, key=f"{key_prefix}_by_field")
+        trade_as = st.selectbox("구매가 기준", opts_trade_as, index=idx_trade_as, key=f"{key_prefix}_trade_as")
         
     with col2:
         st.caption("기간 (Period)")
@@ -132,7 +138,8 @@ def input_strategy_details(key_prefix, default_ticker, saved_data=None):
         "by": [by_agg, by_field],
         "period": period_final,
         "criteria": [crit_type, crit_val],
-        "quantity": [qty_type, qty_val]
+        "quantity": [qty_type, qty_val],
+        "trade_as": trade_as
     }
 
 # -----------------------------------------------------------------------------
