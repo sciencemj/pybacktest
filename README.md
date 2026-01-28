@@ -1,5 +1,7 @@
 # Pybacktest: A Python Backtesting Framework
 
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://pybacktest.streamlit.app)
+
 Pybacktest is a Python library for backtesting trading strategies. It allows you to define strategies using a simple JSON format, run simulations on historical stock data, and visualize the performance of your strategies.
 
 ## Features
