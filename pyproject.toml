@@ -2,6 +2,9 @@
 requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [project]
 name = "pybacktest"
 version = "0.1.0"
@@ -27,3 +30,9 @@ dependencies = [
 
 [project.urls]
 Repository = "https://github.com/sciencemj/pybacktest"
+
+[dependency-groups]
+dev = [
+    "streamlit>=1.50.0",
+    "watchdog>=6.0.0",
+]

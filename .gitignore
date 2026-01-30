@@ -4,3 +4,4 @@ __pycache__/
 .pytest_cache/
 strategy_test_format.json
 .devcontainer
+.venv
