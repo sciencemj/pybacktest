@@ -54,6 +54,7 @@ class Action(BaseModel):
 
 class Portfolio:
     def __init__(self, cash: float, tickers: List[str]):
+        self.initial_capital = cash
         self.cash = cash
         self.tickers = tickers
         self.stock_count = {ticker: 0 for ticker in tickers}

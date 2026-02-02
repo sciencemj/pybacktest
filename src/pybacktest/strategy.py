@@ -6,15 +6,16 @@ import math
 
 class TradeAction(BaseModel):
     ticker: str # index ticker
-    by: List[Union[Literal["average", "current", "percentage"], Literal["Close", "Open", "Low", "High", "Change", "Change_Pct"]]]
-    period: Union[int, bool]
-    criteria: List[Union[Literal["point", "profit-rate", "percent-change"], float]]
+    indicator: List[Union[Literal["average", "current", "percentage"], Literal["Close", "Open", "Low", "High", "Change", "Change_Pct"]]]
+    window: Union[int, bool]
+    threshold: List[Union[Literal["point", "profit-rate", "percent-change"], float]]
     quantity: Optional[List[Union[str, float | int]]] = ["percent", 100]
-    trade_as: Optional[Literal["Close", "Open", "Low", "High"]] = "Close"
+    price_point: Optional[Literal["Close", "Open", "Low", "High"]] = "Close"
 
 class StrategyConfig(BaseModel):
     buy: TradeAction
     sell: TradeAction
+    portfolio_weight: float = 0.0
 
 class StrategyWrapper(RootModel):
     root: Dict[str, StrategyConfig]
@@ -34,7 +35,41 @@ class StrategyManager:
         actions = []
         for ticker, strategy in self.strategies.items():
             actions.extend(self.apply_strategy(ticker, strategy, portfolio, stocks, date))
+        if date.is_month_end:
+            actions.extend(self.rebalance(portfolio, stocks, date))
         #print(f"actions: {actions}")
+        return actions
+
+    def rebalance(self, portfolio: Portfolio, stocks: List[Stock], date: pd.Timestamp) -> List[Action]:
+        total_value = portfolio.cash
+        current_prices = {}
+        for stock in stocks:
+            if stock.ticker in portfolio.stock_count:
+                price = stock.data['Close'].iloc[-1]
+                current_prices[stock.ticker] = price
+                total_value += portfolio.stock_count[stock.ticker] * price
+        
+        actions = []
+        for ticker, strategy in self.strategies.items():
+            weight = strategy.portfolio_weight
+            if weight > 0:
+                current_price = current_prices.get(ticker, 0)
+                if current_price == 0: continue
+                
+                target_value = total_value * weight
+                current_value = portfolio.stock_count[ticker] * current_price
+                diff = target_value - current_value
+                
+                if diff > 0: # Buy
+                    qty = int(diff // current_price)
+                    if qty > 0:
+                        actions.append(Action(ticker=ticker, type="buy", quantity=qty, price=current_price))
+                elif diff < 0: # Sell
+                    qty = int(abs(diff) // current_price)
+                    if qty > 0:
+                        actions.append(Action(ticker=ticker, type="sell", quantity=qty, price=current_price))
+        
+        actions.sort(key=lambda x: 0 if x.type == 'sell' else 1)
         return actions
     
     def get_name(self) -> str:
@@ -51,60 +86,75 @@ class StrategyManager:
         if not target_data or not buy_index_data or not sell_index_data: raise KeyError("No Stock Data for Strategy")
         # buy part ---------------------------------------------------------
         buy: TradeAction = strategy.buy
-        price = target_data.data[buy.trade_as].iloc[-1]
-        by = buy.by
-        if by[0] == "average":
-            if isinstance(buy.period, int):
-                compare_value = buy_index_data.data[by[1]].rolling(window=buy.period, min_periods=1).mean()
-            else: compare_value = buy_index_data.data[by[1]].mean()
+        price = target_data.data[buy.price_point].iloc[-1]
+        indicator = buy.indicator
+        if indicator[0] == "average":
+            if isinstance(buy.window, int):
+                compare_value = buy_index_data.data[indicator[1]].rolling(window=buy.window, min_periods=1).mean()
+            else: compare_value = buy_index_data.data[indicator[1]].mean()
             compare_value = float(compare_value.to_numpy()[-1])
-        elif by[0] == "current":
-            compare_value = buy_index_data.data[by[1]].iloc[-1]
+        elif indicator[0] == "current":
+            compare_value = buy_index_data.data[indicator[1]].iloc[-1]
         else: raise ValueError("Error While setting compare value")
-        criteria = portfolio.buy_value[ticker]
-        #if criteria <= 0: criteria = price
-        crit = buy.criteria
+        threshold = portfolio.buy_value[ticker]
+        #if threshold <= 0: threshold = price
+        crit = buy.threshold
         if crit[0] == "percent-change":
-            criteria = crit[1]
+            threshold = crit[1]
         elif crit[0] == "point":
-            criteria += crit[1]
+            threshold += crit[1]
         elif crit[0] == "profit-rate":
-            criteria *= (100 + crit[1])/100
-        else: raise ValueError(f"you got wrong criteria {crit[0]}")
-        if crit[0] != "percent-change" and criteria == 0:
-            actions.append(StrategyManager.create_action("buy", ticker, price, buy.quantity[0], buy.quantity[1], portfolio))
+            threshold *= (100 + crit[1])/100
+        else: raise ValueError(f"you got wrong threshold {crit[0]}")
+        if crit[0] != "percent-change" and threshold == 0:
+            if buy.quantity[0] == "split":
+                if strategy.portfolio_weight == 0: strategy.portfolio_weight = 1.0
+                val = (portfolio.initial_capital / buy.quantity[1]) * strategy.portfolio_weight
+                actions.append(StrategyManager.create_action("buy", ticker, price, "value", val, portfolio))
+            else:
+                actions.append(StrategyManager.create_action("buy", ticker, price, buy.quantity[0], buy.quantity[1], portfolio))
         elif crit[1] <= 0:
-            if compare_value <= criteria:
-                actions.append(StrategyManager.create_action("buy", ticker, price, buy.quantity[0], buy.quantity[1], portfolio))
+            if compare_value <= threshold:
+                if buy.quantity[0] == "split":
+                    if strategy.portfolio_weight == 0: strategy.portfolio_weight = 1.0
+                    val = (portfolio.initial_capital / buy.quantity[1]) * strategy.portfolio_weight
+                    actions.append(StrategyManager.create_action("buy", ticker, price, "value", val, portfolio))
+                else:
+                    actions.append(StrategyManager.create_action("buy", ticker, price, buy.quantity[0], buy.quantity[1], portfolio))
         else:
-            if compare_value >= criteria:
-                actions.append(StrategyManager.create_action("buy", ticker, price, buy.quantity[0], buy.quantity[1], portfolio))
+            if compare_value >= threshold:
+                if buy.quantity[0] == "split":
+                    if strategy.portfolio_weight == 0: strategy.portfolio_weight = 1.0
+                    val = (portfolio.initial_capital / buy.quantity[1]) * strategy.portfolio_weight
+                    actions.append(StrategyManager.create_action("buy", ticker, price, "value", val, portfolio))
+                else:
+                    actions.append(StrategyManager.create_action("buy", ticker, price, buy.quantity[0], buy.quantity[1], portfolio))
         # sell part ---------------------------------------------------------
         sell: TradeAction = strategy.sell
-        by = sell.by
-        if by[0] == "average":
-            if isinstance(sell.period, int):
-                compare_value = sell_index_data.data[by[1]].rolling(window=sell.period, min_periods=1).mean()
-            else: compare_value = sell_index_data.data[by[1]].mean()
+        indicator = sell.indicator
+        if indicator[0] == "average":
+            if isinstance(sell.window, int):
+                compare_value = sell_index_data.data[indicator[1]].rolling(window=sell.window, min_periods=1).mean()
+            else: compare_value = sell_index_data.data[indicator[1]].mean()
             compare_value = float(compare_value.to_numpy()[-1])
-        elif by[0] == "current":
-            compare_value = sell_index_data.data[by[1]].iloc[-1]
+        elif indicator[0] == "current":
+            compare_value = sell_index_data.data[indicator[1]].iloc[-1]
         else: raise ValueError("Error While setting compare value")
-        criteria = portfolio.buy_value[ticker]
-        #if criteria <= 0: criteria = price
-        crit = sell.criteria
+        threshold = portfolio.buy_value[ticker]
+        #if threshold <= 0: threshold = price
+        crit = sell.threshold
         if crit[0] == "percent-change":
-            criteria = crit[1]
+            threshold = crit[1]
         elif crit[0] == "point":
-            criteria += crit[1]
+            threshold += crit[1]
         elif crit[0] == "profit-rate":
-            criteria *= (100 + crit[1])/100
-        else: raise ValueError(f"you got wrong criteria {crit[0]}")
+            threshold *= (100 + crit[1])/100
+        else: raise ValueError(f"you got wrong threshold {crit[0]}")
         if crit[1] <= 0:
-            if compare_value <= criteria:
+            if compare_value <= threshold:
                 actions.append(StrategyManager.create_action("sell", ticker, price, sell.quantity[0], sell.quantity[1], portfolio))
         else:
-            if compare_value >= criteria:
+            if compare_value >= threshold:
                 actions.append(StrategyManager.create_action("sell", ticker, price, sell.quantity[0], sell.quantity[1], portfolio))
         return actions
 

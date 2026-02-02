@@ -60,7 +60,7 @@ def test_strategy_init():
     with open('strategy_test_format.json', 'r') as json_file:
         test_data = json.load(json_file)
     strategy = StrategyWrapper.model_validate(test_data)
-    assert strategy['AAPL'].buy.by == ["current", "Close"]
+    assert strategy['AAPL'].buy.indicator == ["current", "Close"]
     assert strategy['TQQQ'].buy.ticker == "AAPL"
     assert strategy['TQQQ'].sell.quantity == ["percent", 100]
 
