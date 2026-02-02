@@ -126,68 +126,79 @@ class Backtest:
         self, actions: list[Action], date: pd.Timestamp, strategy: StrategyManager
     ):
         """
-        action: {
-            'AAPL': {'type': 'buy', 'quantity': 10, price: 150.0},
-            'MSFT': {'type': 'sell', 'quantity': 5, price: 250.0}
-        }
+        Executes a list of actions with fair cash allocation.
+        1. Sells are executed first to release cash.
+        2. Buys are executed second.
+           If total cost of buys > available cash, buy quantities are scaled down proportionally.
         """
+        # separate actions
+        buys = []
+        sells = []
         for action in actions:
-            if action.quantity == 0:
+            if action.quantity <= 0:
                 continue
-            if action.type == "buy":
-                cost = action.price * action.quantity
-                if self.portfolio.cash >= cost:
-                    self.portfolio.update(action.ticker, action.quantity, action.price)
-                    self.trades[strategy].append(
-                        {
-                            "date": date,
-                            "ticker": action.ticker,
-                            "type": "buy",
-                            "quantity": action.quantity,
-                            "price": action.price,
-                        }
-                    )
-                else:
-                    over_quantity = math.ceil(
-                        (action.price * action.quantity - self.portfolio.cash)
-                        / action.price
-                    )
-                    self.portfolio.update(
-                        action.ticker,
-                        min(action.quantity, action.quantity - over_quantity),
-                        action.price,
-                    )
-                    self.trades[strategy].append(
-                        {
-                            "date": date,
-                            "ticker": action.ticker,
-                            "type": "buy",
-                            "quantity": min(
-                                action.quantity, action.quantity - over_quantity
-                            ),
-                            "price": action.price,
-                        }
-                    )
-                    warnings.warn(
-                        f"Not enough money to buy {action.quantity} shares of {action.ticker} at {action.price} on {date}! Check your strategy.(This can be caused indicator buying multiple stocks in one day.)"
-                    )
+            if action.type == "sell":
+                sells.append(action)
+            elif action.type == "buy":
+                buys.append(action)
 
-            elif action.type == "sell":
-                if self.portfolio.stock_count[action.ticker] >= action.quantity:
-                    # revenue = action.price * action.quantity
-                    self.portfolio.update(action.ticker, -action.quantity, action.price)
+        # 1. Execute Sells first
+        for action in sells:
+            if self.portfolio.stock_count[action.ticker] >= action.quantity:
+                self.portfolio.update(action.ticker, -action.quantity, action.price)
+                self.trades[strategy].append(
+                    {
+                        "date": date,
+                        "ticker": action.ticker,
+                        "type": "sell",
+                        "quantity": action.quantity,
+                        "price": action.price,
+                    }
+                )
+            else:
+                raise ValueError(
+                    f"Not enough shares to sell {action.quantity} of {action.ticker} on {date}! Check your strategy."
+                )
+
+        # 2. Execute Buys with Proportional Allocation
+        if not buys:
+            return
+
+        total_buy_cost = sum(action.price * action.quantity for action in buys)
+        available_cash = self.portfolio.cash
+
+        ratio = 1.0
+        if total_buy_cost > available_cash and available_cash > 0:
+            ratio = available_cash / total_buy_cost
+            warnings.warn(
+                f"Insufficient cash on {date}. scaling down buy orders by ratio {ratio:.4f}"
+            )
+        elif total_buy_cost > available_cash and available_cash <= 0:
+            warnings.warn(f"No cash available on {date} to process buy orders.")
+            return
+
+        for action in buys:
+            # Scale quantity if needed
+            quantity_to_buy = math.floor(action.quantity * ratio)
+
+            if quantity_to_buy > 0:
+                cost = quantity_to_buy * action.price
+                # Double check cash (floating point issues or floor might leave tiny gap, usually fine since we floored)
+                if self.portfolio.cash >= cost:
+                    self.portfolio.update(action.ticker, quantity_to_buy, action.price)
                     self.trades[strategy].append(
                         {
                             "date": date,
                             "ticker": action.ticker,
-                            "type": "sell",
-                            "quantity": action.quantity,
+                            "type": "buy",
+                            "quantity": quantity_to_buy,
                             "price": action.price,
                         }
                     )
                 else:
-                    raise ValueError(
-                        f"Not enough shares to sell {action.quantity} of {action.ticker} on {date}! Check your strategy."
+                    # Should rarely happen with proportional logic unless price is huge relative to cash residue
+                    warnings.warn(
+                        f"Skipping buy for {action.ticker}: Cash check failed after scaling."
                     )
 
     def plot_performance(

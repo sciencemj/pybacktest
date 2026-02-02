@@ -1,6 +1,7 @@
 import pandas as pd
 
-from pybacktest.models import Portfolio, Stock
+from pybacktest.backtest import Backtest
+from pybacktest.models import Action, Portfolio, Stock
 from pybacktest.strategy import (
     StrategyConfig,
     StrategyManager,
@@ -143,12 +144,6 @@ def test_rebalancing():
 
 
 def test_monthly_snapshots():
-    import pandas as pd
-
-    from pybacktest.backtest import Backtest
-    from pybacktest.models import Stock
-    from pybacktest.strategy import StrategyManager, StrategyWrapper
-
     # Mock Data: 35 days of data (covering 2 months)
     dates = pd.date_range(start="2023-01-01", periods=40, freq="D")
     data = pd.DataFrame({"Close": [100.0] * 40}, index=dates)
@@ -175,3 +170,60 @@ def test_monthly_snapshots():
     assert "Total_Value" in monthly_df.columns
     assert "Stock_Amount_AAPL" in monthly_df.columns
     assert "Stock_Value_AAPL" in monthly_df.columns
+
+
+def test_fair_cash_allocation():
+    # Scenario 1: Proportional Allocation
+    # Cash 10,000. Buy A, B, C (Price 100). Qty 50 each. Total Cost 15,000.
+    # Ratio = 10000/15000 = 0.666. New Qty = 33.
+
+    portfolio = Portfolio(10000.0, ["A", "B", "C"])
+    date = pd.to_datetime("2023-01-01")
+
+    # Mocking Backtest instance partially or just testing execute_action via Backtest logic?
+    # Better to test logic directly via a strategy or manual invocation if possible.
+    # However, execute_action is method of Backtest. We need Backtest instance.
+
+    stock_a = Stock("A", "2023-01-01", "2023-01-02", fetch=False)
+    stock_b = Stock("B", "2023-01-01", "2023-01-02", fetch=False)
+    stock_c = Stock("C", "2023-01-01", "2023-01-02", fetch=False)
+
+    dummy_strategy = StrategyManager("Test", StrategyWrapper(root={}))
+
+    backtest = Backtest(
+        [stock_a, stock_b, stock_c], [dummy_strategy], initial_capital=10000.0
+    )
+    # Inject portfolio
+    backtest.portfolio = portfolio
+
+    actions = [
+        Action(ticker="A", type="buy", quantity=50, price=100.0),
+        Action(ticker="B", type="buy", quantity=50, price=100.0),
+        Action(ticker="C", type="buy", quantity=50, price=100.0),
+    ]
+
+    backtest.execute_action(actions, date, dummy_strategy)
+
+    # Check trades or portfolio
+    # A, B, C should have 33 shares each
+    print(backtest.portfolio.stock_count)
+    assert backtest.portfolio.stock_count["A"] == 33
+    assert backtest.portfolio.stock_count["B"] == 33
+    assert backtest.portfolio.stock_count["C"] == 33
+
+    # Scenario 2: Sell Priority
+    # Cash 0. Hold 100 A (Price 100). Sell 100 A. Buy 100 B (Price 100).
+    portfolio_2 = Portfolio(0.0, ["A", "B"])
+    portfolio_2.stock_count["A"] = 100
+    backtest.portfolio = portfolio_2
+
+    actions_2 = [
+        Action(ticker="B", type="buy", quantity=100, price=100.0),
+        Action(ticker="A", type="sell", quantity=100, price=100.0),
+    ]
+
+    backtest.execute_action(actions_2, date, dummy_strategy)
+
+    assert backtest.portfolio.stock_count["A"] == 0
+    assert backtest.portfolio.stock_count["B"] == 100
+    assert backtest.portfolio.cash == 0.0
