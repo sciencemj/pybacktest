@@ -50,7 +50,7 @@ class StrategyManager:
             actions.extend(
                 self.apply_strategy(ticker, strategy, portfolio, stocks, date)
             )
-        if date.is_month_end:
+        if date.day == 15:
             actions.extend(self.rebalance(portfolio, stocks, date))
         # print(f"actions: {actions}")
         return actions
@@ -78,18 +78,18 @@ class StrategyManager:
                 current_value = portfolio.stock_count[ticker] * current_price
                 diff = target_value - current_value
 
-                if diff > 0:  # Buy
-                    qty = int(diff // current_price)
-                    if qty > 0:
-                        actions.append(
-                            Action(
-                                ticker=ticker,
-                                type="buy",
-                                quantity=qty,
-                                price=current_price,
-                            )
-                        )
-                elif diff < 0:  # Sell
+                # if diff > 0:  # Buy
+                #     qty = int(diff // current_price)
+                #     if qty > 0:
+                #         actions.append(
+                #             Action(
+                #                 ticker=ticker,
+                #                 type="buy",
+                #                 quantity=qty,
+                #                 price=current_price,
+                #             )
+                #         )
+                if diff < 0:  # Sell
                     qty = int(abs(diff) // current_price)
                     if qty > 0:
                         actions.append(

@@ -131,16 +131,14 @@ def test_rebalancing():
 
     print("Rebalance Actions:", rebalance_actions)
 
-    # Should be [Sell A, Buy B] (Sell sorted first)
-    assert len(rebalance_actions) == 2
+    # Should be [Sell A] (Buy B is disabled)
+    assert len(rebalance_actions) == 1
     assert rebalance_actions[0].ticker == "A"
     assert rebalance_actions[0].type == "sell"
     # value 1000 -> quantity 10
     assert rebalance_actions[0].quantity == 10
 
-    assert rebalance_actions[1].ticker == "B"
-    assert rebalance_actions[1].type == "buy"
-    assert rebalance_actions[1].quantity == 10
+    # Buy B expectation removed
 
 
 def test_monthly_snapshots():
@@ -227,3 +225,104 @@ def test_fair_cash_allocation():
     assert backtest.portfolio.stock_count["A"] == 0
     assert backtest.portfolio.stock_count["B"] == 100
     assert backtest.portfolio.cash == 0.0
+
+
+def test_rebalancing_mid_month():
+    # Setup
+    initial_capital = 10000.0
+    portfolio = Portfolio(initial_capital, ["A", "B"])
+
+    # Initial State:
+    # A: 100 shares @ 100 = 10000 (100% allocation)
+    # B: 0 shares
+    # Cash: 0
+    portfolio.stock_count["A"] = 100
+    portfolio.stock_count["B"] = 0
+    portfolio.cash = 0
+
+    # Mock Stocks
+    stock_a = Stock("A", "2023-01-01", "2023-01-31", fetch=False)
+    stock_a.data = pd.DataFrame(
+        {"Close": [100.0]}, index=pd.to_datetime(["2023-01-15"])
+    )
+    stock_b = Stock("B", "2023-01-01", "2023-01-31", fetch=False)
+    stock_b.data = pd.DataFrame(
+        {"Close": [100.0]}, index=pd.to_datetime(["2023-01-15"])
+    )
+
+    # Strategy with 50-50 weights
+    config_a = StrategyConfig(
+        buy=TradeAction(
+            ticker="A",
+            indicator=["current", "Close"],
+            window=False,
+            threshold=["point", 0],
+            quantity=["percent", 0],
+        ),  # No op
+        sell=TradeAction(
+            ticker="A",
+            indicator=["current", "Close"],
+            window=False,
+            threshold=["point", 9999],
+            quantity=["percent", 0],
+        ),  # No op
+        portfolio_weight=0.5,
+    )
+    config_b = StrategyConfig(
+        buy=TradeAction(
+            ticker="B",
+            indicator=["current", "Close"],
+            window=False,
+            threshold=["point", 0],
+            quantity=["percent", 0],
+        ),
+        sell=TradeAction(
+            ticker="B",
+            indicator=["current", "Close"],
+            window=False,
+            threshold=["point", 9999],
+            quantity=["percent", 0],
+        ),
+        portfolio_weight=0.5,
+    )
+
+    wrapper = StrategyWrapper(root={"A": config_a, "B": config_b})
+    manager = StrategyManager("Test", wrapper)
+
+    # Test 1: Mid-month Trigger (15th)
+    date_15th = pd.to_datetime("2023-01-15")
+
+    actions_15th = manager.apply(portfolio, [stock_a, stock_b], date_15th)
+
+    # Expectation:
+    # A is 10000, target 5000. Diff -5000. Should Sell 50 shares of A.
+    # B is 0, target 5000. Diff +5000. Buy is DISABLED -> No Buy B.
+    # Result: [Sell A] (plus any strategy actions, but here we discard 0 qty)
+
+    valid_actions = [a for a in actions_15th if a.quantity > 0]
+
+    print(f"Actions on 15th: {actions_15th}")
+    print(f"Valid Actions: {valid_actions}")
+
+    assert len(valid_actions) == 1
+    assert valid_actions[0].ticker == "A"
+    assert valid_actions[0].type == "sell"
+    assert valid_actions[0].quantity == 50
+
+    # Test 2: Month-End Trigger (should NOT trigger rebalance anymore)
+    date_end = pd.to_datetime("2023-01-31")
+    # Need data for 31st for apply to work without error if strategy checks indicators
+    stock_a.data = pd.DataFrame(
+        {"Close": [100.0]}, index=pd.to_datetime(["2023-01-31"])
+    )
+    stock_b.data = pd.DataFrame(
+        {"Close": [100.0]}, index=pd.to_datetime(["2023-01-31"])
+    )
+
+    actions_end = manager.apply(portfolio, [stock_a, stock_b], date_end)
+
+    valid_actions_end = [a for a in actions_end if a.quantity > 0]
+
+    print(f"Actions on 31st: {actions_end}")
+    # Should be empty if no normal strategy triggers
+    assert len(valid_actions_end) == 0
