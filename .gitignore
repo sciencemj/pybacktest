@@ -5,3 +5,4 @@ __pycache__/
 strategy_test_format.json
 .devcontainer
 .venv
+.superpowers/
