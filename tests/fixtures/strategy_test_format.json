@@ -1,0 +1,34 @@
+{
+  "AAPL": {
+    "buy": {
+      "ticker": "AAPL",
+      "indicator": ["current", "Close"],
+      "window": 3,
+      "threshold": ["point", 300],
+      "quantity": ["count", 10]
+    },
+    "sell": {
+      "ticker": "AAPL",
+      "indicator": ["current", "Close"],
+      "window": false,
+      "threshold": ["point", -300],
+      "quantity": ["value", 300]
+    }
+  },
+  "TQQQ": {
+    "buy": {
+      "ticker": "AAPL",
+      "indicator": ["average", "Change"],
+      "window": 3,
+      "threshold": ["profit-rate", 10],
+      "quantity": ["percent", 30]
+    },
+    "sell": {
+      "ticker": "AAPL",
+      "indicator": ["current", "Change_Pct"],
+      "window": false,
+      "threshold": ["percent-change", -3],
+      "quantity": ["percent", 100]
+    }
+  }
+}
