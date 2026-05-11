@@ -6,3 +6,4 @@ strategy_test_format.json
 .devcontainer
 .venv
 .superpowers/
+.worktrees/
