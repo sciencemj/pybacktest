@@ -5,6 +5,7 @@ import pandas as pd
 from pydantic import BaseModel, RootModel
 
 from pybacktest.models import Action, Portfolio, Stock
+from pybacktest.signals import evaluate_trade_action
 
 
 class TradeAction(BaseModel):
@@ -12,11 +13,15 @@ class TradeAction(BaseModel):
     indicator: List[
         Union[
             Literal["average", "current", "percentage"],
-            Literal["Close", "Open", "Low", "High", "Change", "Change_Pct"],
+            Literal["Close", "Open", "Low", "High", "Change", "Change_Pct", "Volume"],
         ]
     ]
     window: Union[int, bool]
-    threshold: List[Union[Literal["point", "profit-rate", "percent-change"], float]]
+    threshold: List[
+        Union[
+            Literal["point", "profit-rate", "percent-change", "volume-ratio"], float
+        ]
+    ]
     quantity: Optional[List[Union[str, float | int]]] = ["percent", 100]
     price_point: Optional[Literal["Close", "Open", "Low", "High"]] = "Close"
 
@@ -115,169 +120,23 @@ class StrategyManager:
         stocks: List[Stock],
         date: pd.Timestamp,
     ) -> List[Action]:
-        target_data, buy_index_data, sell_index_data = None, None, None
         actions = []
-        for s in stocks:
-            if s.ticker == ticker:
-                target_data = s
-            if s.ticker == strategy.buy.ticker:
-                buy_index_data = s
-            if s.ticker == strategy.sell.ticker:
-                sell_index_data = s
-        if not target_data or not buy_index_data or not sell_index_data:
-            raise KeyError("No Stock Data for Strategy")
-        # buy part ---------------------------------------------------------
-        buy: TradeAction = strategy.buy
-        price = target_data.data[buy.price_point].iloc[-1]
-        indicator = buy.indicator
-        if indicator[0] == "average":
-            if isinstance(buy.window, int):
-                compare_value = (
-                    buy_index_data.data[indicator[1]]
-                    .rolling(window=buy.window, min_periods=1)
-                    .mean()
-                )
-            else:
-                compare_value = buy_index_data.data[indicator[1]].mean()
-            compare_value = float(compare_value.to_numpy()[-1])
-        elif indicator[0] == "current":
-            compare_value = buy_index_data.data[indicator[1]].iloc[-1]
-        else:
-            raise ValueError("Error While setting compare value")
-        threshold = portfolio.buy_value[ticker]
-        # if threshold <= 0: threshold = price
-        crit = buy.threshold
-        if crit[0] == "percent-change":
-            threshold = crit[1]
-        elif crit[0] == "point":
-            threshold += crit[1]
-        elif crit[0] == "profit-rate":
-            threshold *= (100 + crit[1]) / 100
-        else:
-            raise ValueError(f"you got wrong threshold {crit[0]}")
-        if crit[0] != "percent-change" and threshold == 0:
-            if buy.quantity[0] == "split":
-                if strategy.portfolio_weight == 0:
-                    strategy.portfolio_weight = 1.0
-                val = (
-                    portfolio.initial_capital / buy.quantity[1]
-                ) * strategy.portfolio_weight
-                actions.append(
-                    StrategyManager.create_action(
-                        "buy", ticker, price, "value", val, portfolio
-                    )
-                )
-            else:
-                actions.append(
-                    StrategyManager.create_action(
-                        "buy",
-                        ticker,
-                        price,
-                        buy.quantity[0],
-                        buy.quantity[1],
-                        portfolio,
-                    )
-                )
-        elif crit[1] <= 0:
-            if compare_value <= threshold:
-                if buy.quantity[0] == "split":
-                    if strategy.portfolio_weight == 0:
-                        strategy.portfolio_weight = 1.0
-                    val = (
-                        portfolio.initial_capital / buy.quantity[1]
-                    ) * strategy.portfolio_weight
-                    actions.append(
-                        StrategyManager.create_action(
-                            "buy", ticker, price, "value", val, portfolio
-                        )
-                    )
-                else:
-                    actions.append(
-                        StrategyManager.create_action(
-                            "buy",
-                            ticker,
-                            price,
-                            buy.quantity[0],
-                            buy.quantity[1],
-                            portfolio,
-                        )
-                    )
-        else:
-            if compare_value >= threshold:
-                if buy.quantity[0] == "split":
-                    if strategy.portfolio_weight == 0:
-                        strategy.portfolio_weight = 1.0
-                    val = (
-                        portfolio.initial_capital / buy.quantity[1]
-                    ) * strategy.portfolio_weight
-                    actions.append(
-                        StrategyManager.create_action(
-                            "buy", ticker, price, "value", val, portfolio
-                        )
-                    )
-                else:
-                    actions.append(
-                        StrategyManager.create_action(
-                            "buy",
-                            ticker,
-                            price,
-                            buy.quantity[0],
-                            buy.quantity[1],
-                            portfolio,
-                        )
-                    )
-        # sell part ---------------------------------------------------------
-        sell: TradeAction = strategy.sell
-        indicator = sell.indicator
-        if indicator[0] == "average":
-            if isinstance(sell.window, int):
-                compare_value = (
-                    sell_index_data.data[indicator[1]]
-                    .rolling(window=sell.window, min_periods=1)
-                    .mean()
-                )
-            else:
-                compare_value = sell_index_data.data[indicator[1]].mean()
-            compare_value = float(compare_value.to_numpy()[-1])
-        elif indicator[0] == "current":
-            compare_value = sell_index_data.data[indicator[1]].iloc[-1]
-        else:
-            raise ValueError("Error While setting compare value")
-        threshold = portfolio.buy_value[ticker]
-        # if threshold <= 0: threshold = price
-        crit = sell.threshold
-        if crit[0] == "percent-change":
-            threshold = crit[1]
-        elif crit[0] == "point":
-            threshold += crit[1]
-        elif crit[0] == "profit-rate":
-            threshold *= (100 + crit[1]) / 100
-        else:
-            raise ValueError(f"you got wrong threshold {crit[0]}")
-        if crit[1] <= 0:
-            if compare_value <= threshold:
-                actions.append(
-                    StrategyManager.create_action(
-                        "sell",
-                        ticker,
-                        price,
-                        sell.quantity[0],
-                        sell.quantity[1],
-                        portfolio,
-                    )
-                )
-        else:
-            if compare_value >= threshold:
-                actions.append(
-                    StrategyManager.create_action(
-                        "sell",
-                        ticker,
-                        price,
-                        sell.quantity[0],
-                        sell.quantity[1],
-                        portfolio,
-                    )
-                )
+        portfolio_weight = strategy.portfolio_weight or 1.0
+        buy_action = evaluate_trade_action(
+            strategy.buy,
+            ticker,
+            "buy",
+            portfolio,
+            stocks,
+            portfolio_weight=portfolio_weight,
+        )
+        if buy_action is not None:
+            actions.append(buy_action)
+        sell_action = evaluate_trade_action(
+            strategy.sell, ticker, "sell", portfolio, stocks
+        )
+        if sell_action is not None:
+            actions.append(sell_action)
         return actions
 
     @staticmethod
