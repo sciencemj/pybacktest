@@ -25,6 +25,7 @@ class Backtest:
         self.dates = self.get_common_dates()
         self.value_over_time = defaultdict(dict)
         self.daily_snapshots = []  # To store daily portfolio state
+        self.result: Optional[BacktestResult] = None
         self.portfolio: Portfolio = Portfolio(
             initial_capital, [stock.ticker for stock in stocks]
         )
@@ -128,15 +129,17 @@ class Backtest:
         self.daily_snapshots.append(snapshot)
         return snapshot
 
-    def get_monthly_snapshots(self) -> pd.DataFrame:
-        if not self.daily_snapshots:
-            return pd.DataFrame()
-        df = pd.DataFrame(self.daily_snapshots)
-        df["date"] = pd.to_datetime(df["date"])
-        df.set_index("date", inplace=True)
-        # Resample to month end, taking the last value
-        monthly_df = df.resample("ME").last()
-        return monthly_df
+    def get_monthly_snapshots(self):
+        if self.result is None:
+            raise RuntimeError("Run backtest first.")
+        strategy_results = self.result.strategies
+        if len(strategy_results) == 1:
+            (only_result,) = strategy_results.values()
+            return only_result.monthly_snapshots()
+        return {
+            name: strategy_result.monthly_snapshots()
+            for name, strategy_result in strategy_results.items()
+        }
 
     def execute_action(
         self, actions: list[Action], date: pd.Timestamp, strategy: StrategyManager

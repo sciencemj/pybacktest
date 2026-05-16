@@ -34,3 +34,25 @@ def test_run_returns_results_by_strategy_without_mixing_snapshots():
     assert len(results.strategies["second"].daily_snapshots) == 3
     assert results.strategies["first"].daily_snapshots[-1]["Stock_Amount_A"] == 1
     assert results.strategies["second"].daily_snapshots[-1]["Stock_Amount_A"] == 0
+
+
+def test_get_monthly_snapshots_returns_per_strategy_for_multi_strategy_run():
+    first = Strategy("first", lambda p, s, d: [])
+    second = Strategy("second", lambda p, s, d: [])
+    backtest = Backtest([_stock("A")], [first, second], initial_capital=1000.0)
+    backtest.run()
+
+    result = backtest.get_monthly_snapshots()
+
+    assert isinstance(result, dict)
+    assert set(result.keys()) == {"first", "second"}
+    import pandas as pd
+    assert isinstance(result["first"], pd.DataFrame)
+    assert isinstance(result["second"], pd.DataFrame)
+
+
+def test_get_monthly_snapshots_before_run_raises():
+    import pytest
+    backtest = Backtest([_stock("A")], [Strategy("only", lambda p, s, d: [])], initial_capital=1000.0)
+    with pytest.raises(RuntimeError):
+        backtest.get_monthly_snapshots()
