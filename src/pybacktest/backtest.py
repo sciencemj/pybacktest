@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import math
-import warnings
+import warnings as warnings_module
 from collections import defaultdict
 from typing import List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import pandas as pd
 
+from pybacktest.execution import ExecutionConfig, execute_actions
 from pybacktest.models import Action, Portfolio, Stock
 from pybacktest.rebalancing import RebalanceConfig, generate_rebalance_actions
 from pybacktest.results import BacktestResult, StrategyResult
@@ -21,6 +21,7 @@ class Backtest:
         strategies: List[StrategyManager],
         initial_capital: float = 10000.0,
         rebalance: dict | None = None,
+        execution: dict | None = None,
     ):
         self.stocks = stocks
         self.strategies = strategies
@@ -34,6 +35,9 @@ class Backtest:
             initial_capital, [stock.ticker for stock in stocks]
         )
         self.rebalance_config = RebalanceConfig(**rebalance) if rebalance else None
+        self.execution_config = (
+            ExecutionConfig(**execution) if execution else ExecutionConfig()
+        )
 
     def get_protfolio_value(self, date: str) -> float:
         """
@@ -112,7 +116,9 @@ class Backtest:
                     )
                     actions.extend(rebalance_actions)
                     strategy_result.warnings.extend(rebalance_warnings)
-                self.execute_action(actions, date, strategy)
+                self.current_stock_data = stock_data
+                execution_warnings = self.execute_action(actions, date, strategy)
+                strategy_result.warnings.extend(execution_warnings)
                 value = self.get_protfolio_value(date)
                 self.value_over_time[strategy][date] = value
                 strategy_result.equity_curve[date] = value
@@ -168,80 +174,25 @@ class Backtest:
         self, actions: list[Action], date: pd.Timestamp, strategy: StrategyManager
     ):
         """
-        Executes a list of actions with fair cash allocation.
-        1. Sells are executed first to release cash.
-        2. Buys are executed second.
-           If total cost of buys > available cash, buy quantities are scaled down proportionally.
+        Execute a list of actions for ``strategy`` on ``date``.
+
+        Delegates to :func:`pybacktest.execution.execute_actions` to perform
+        sells-before-buys ordering, optional liquidity-limit scaling and
+        proportional cash allocation. Warnings produced by the execution
+        module are emitted via ``warnings.warn`` and also returned to the
+        caller so they can be captured into structured results.
         """
-        # separate actions
-        buys = []
-        sells = []
-        for action in actions:
-            if action.quantity <= 0:
-                continue
-            if action.type == "sell":
-                sells.append(action)
-            elif action.type == "buy":
-                buys.append(action)
-
-        # 1. Execute Sells first
-        for action in sells:
-            if self.portfolio.stock_count[action.ticker] >= action.quantity:
-                self.portfolio.update(action.ticker, -action.quantity, action.price)
-                self.trades[strategy].append(
-                    {
-                        "date": date,
-                        "ticker": action.ticker,
-                        "type": "sell",
-                        "quantity": action.quantity,
-                        "price": action.price,
-                    }
-                )
-            else:
-                raise ValueError(
-                    f"Not enough shares to sell {action.quantity} of {action.ticker} on {date}! Check your strategy."
-                )
-
-        # 2. Execute Buys with Proportional Allocation
-        if not buys:
-            return
-
-        total_buy_cost = sum(action.price * action.quantity for action in buys)
-        available_cash = self.portfolio.cash
-
-        ratio = 1.0
-        if total_buy_cost > available_cash and available_cash > 0:
-            ratio = available_cash / total_buy_cost
-            warnings.warn(
-                f"Insufficient cash on {date}. scaling down buy orders by ratio {ratio:.4f}"
-            )
-        elif total_buy_cost > available_cash and available_cash <= 0:
-            warnings.warn(f"No cash available on {date} to process buy orders.")
-            return
-
-        for action in buys:
-            # Scale quantity if needed
-            quantity_to_buy = math.floor(action.quantity * ratio)
-
-            if quantity_to_buy > 0:
-                cost = quantity_to_buy * action.price
-                # Double check cash (floating point issues or floor might leave tiny gap, usually fine since we floored)
-                if self.portfolio.cash >= cost:
-                    self.portfolio.update(action.ticker, quantity_to_buy, action.price)
-                    self.trades[strategy].append(
-                        {
-                            "date": date,
-                            "ticker": action.ticker,
-                            "type": "buy",
-                            "quantity": quantity_to_buy,
-                            "price": action.price,
-                        }
-                    )
-                else:
-                    # Should rarely happen with proportional logic unless price is huge relative to cash residue
-                    warnings.warn(
-                        f"Skipping buy for {action.ticker}: Cash check failed after scaling."
-                    )
+        trades, warnings = execute_actions(
+            portfolio=self.portfolio,
+            actions=actions,
+            stocks=getattr(self, "current_stock_data", self.stocks),
+            date=date,
+            config=self.execution_config,
+        )
+        self.trades[strategy].extend(trades)
+        for warning in warnings:
+            warnings_module.warn(warning)
+        return warnings
 
     def plot_performance(
         self,
