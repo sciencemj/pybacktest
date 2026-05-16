@@ -9,6 +9,7 @@ import pandas as pd
 
 from pybacktest.execution import ExecutionConfig, execute_actions
 from pybacktest.models import Action, Portfolio, Stock
+from pybacktest.projection import ProjectionConfig, project_portfolio
 from pybacktest.rebalancing import RebalanceConfig, generate_rebalance_actions
 from pybacktest.results import BacktestResult, StrategyResult
 from pybacktest.strategy import StrategyManager
@@ -22,6 +23,7 @@ class Backtest:
         initial_capital: float = 10000.0,
         rebalance: dict | None = None,
         execution: dict | None = None,
+        projection: dict | None = None,
     ):
         self.stocks = stocks
         self.strategies = strategies
@@ -37,6 +39,9 @@ class Backtest:
         self.rebalance_config = RebalanceConfig(**rebalance) if rebalance else None
         self.execution_config = (
             ExecutionConfig(**execution) if execution else ExecutionConfig()
+        )
+        self.projection_config = (
+            ProjectionConfig(**projection) if projection else ProjectionConfig()
         )
 
     def get_protfolio_value(self, date: str) -> float:
@@ -127,6 +132,13 @@ class Backtest:
             strategy_result.trades = list(self.trades[strategy])
             strategy_result.final_cash = self.portfolio.cash
             strategy_result.final_holdings = dict(self.portfolio.stock_count)
+            projection_df, projection_warnings = project_portfolio(
+                self.portfolio,
+                self.stocks,
+                self.projection_config,
+            )
+            strategy_result.projection = projection_df
+            strategy_result.warnings.extend(projection_warnings)
             result.strategies[strategy.get_name()] = strategy_result
         self.result = result
         print("Ended Running Backtest!")
