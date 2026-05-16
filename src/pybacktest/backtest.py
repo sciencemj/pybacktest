@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from pybacktest.models import Action, Portfolio, Stock
+from pybacktest.results import BacktestResult, StrategyResult
 from pybacktest.strategy import StrategyManager
 
 
@@ -73,19 +74,33 @@ class Backtest:
             run_dates = self.dates[self.dates <= pd.to_datetime(end_date)]
         else:
             run_dates = self.dates
+        result = BacktestResult()
         for strategy in self.strategies:
+            strategy_result = StrategyResult(name=strategy.get_name())
             self.portfolio = Portfolio(
                 self.initial_capital, [stock.ticker for stock in self.stocks]
             )
+            self.daily_snapshots = []
+            self.value_over_time[strategy] = {}
+            self.trades[strategy] = []
             for date in run_dates:
                 stock_data = [
                     stock.cut_data(stock.start, date) for stock in self.stocks
                 ]
                 actions = strategy.apply(self.portfolio, stock_data, date)
                 self.execute_action(actions, date, strategy)
-                self.value_over_time[strategy][date] = self.get_protfolio_value(date)
-                self.record_daily_snapshot(date)
+                value = self.get_protfolio_value(date)
+                self.value_over_time[strategy][date] = value
+                strategy_result.equity_curve[date] = value
+                snapshot = self.record_daily_snapshot(date)
+                strategy_result.daily_snapshots.append(snapshot)
+            strategy_result.trades = list(self.trades[strategy])
+            strategy_result.final_cash = self.portfolio.cash
+            strategy_result.final_holdings = dict(self.portfolio.stock_count)
+            result.strategies[strategy.get_name()] = strategy_result
+        self.result = result
         print("Ended Running Backtest!")
+        return result
 
     def record_daily_snapshot(self, date: pd.Timestamp):
         snapshot = {
@@ -111,6 +126,7 @@ class Backtest:
                     else:
                         snapshot[f"Stock_Value_{ticker}"] = 0  # Or prev close?
         self.daily_snapshots.append(snapshot)
+        return snapshot
 
     def get_monthly_snapshots(self) -> pd.DataFrame:
         if not self.daily_snapshots:
