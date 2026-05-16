@@ -5,6 +5,7 @@ import pandas as pd
 from pydantic import BaseModel, RootModel
 
 from pybacktest.models import Action, Portfolio, Stock
+from pybacktest.rebalancing import RebalanceConfig, generate_rebalance_actions
 from pybacktest.signals import evaluate_trade_action
 
 
@@ -47,7 +48,7 @@ class StrategyManager:
         self.name = name
         self.strategies: StrategyWrapper = strategies
 
-    def apply(
+    def apply_signals(
         self, portfolio: Portfolio, stocks: List[Stock], date: pd.Timestamp
     ) -> List[Action]:
         actions = []
@@ -55,58 +56,31 @@ class StrategyManager:
             actions.extend(
                 self.apply_strategy(ticker, strategy, portfolio, stocks, date)
             )
+        return actions
+
+    def apply(
+        self, portfolio: Portfolio, stocks: List[Stock], date: pd.Timestamp
+    ) -> List[Action]:
+        actions = self.apply_signals(portfolio, stocks, date)
         if date.day == 15:
             actions.extend(self.rebalance(portfolio, stocks, date))
-        # print(f"actions: {actions}")
         return actions
 
     def rebalance(
         self, portfolio: Portfolio, stocks: List[Stock], date: pd.Timestamp
     ) -> List[Action]:
-        total_value = portfolio.cash
-        current_prices = {}
-        for stock in stocks:
-            if stock.ticker in portfolio.stock_count:
-                price = stock.data["Close"].iloc[-1]
-                current_prices[stock.ticker] = price
-                total_value += portfolio.stock_count[stock.ticker] * price
-
-        actions = []
-        for ticker, strategy in self.strategies.items():
-            weight = strategy.portfolio_weight
-            if weight > 0:
-                current_price = current_prices.get(ticker, 0)
-                if current_price == 0:
-                    continue
-
-                target_value = total_value * weight
-                current_value = portfolio.stock_count[ticker] * current_price
-                diff = target_value - current_value
-
-                # if diff > 0:  # Buy
-                #     qty = int(diff // current_price)
-                #     if qty > 0:
-                #         actions.append(
-                #             Action(
-                #                 ticker=ticker,
-                #                 type="buy",
-                #                 quantity=qty,
-                #                 price=current_price,
-                #             )
-                #         )
-                if diff < 0:  # Sell
-                    qty = int(abs(diff) // current_price)
-                    if qty > 0:
-                        actions.append(
-                            Action(
-                                ticker=ticker,
-                                type="sell",
-                                quantity=qty,
-                                price=current_price,
-                            )
-                        )
-
-        actions.sort(key=lambda x: 0 if x.type == "sell" else 1)
+        weights = {
+            ticker: strategy.portfolio_weight
+            for ticker, strategy in self.strategies.items()
+            if strategy.portfolio_weight > 0
+        }
+        actions, _warnings = generate_rebalance_actions(
+            portfolio,
+            stocks,
+            weights,
+            date,
+            RebalanceConfig(enabled=True, day=date.day, mode="sell_only"),
+        )
         return actions
 
     def get_name(self) -> str:

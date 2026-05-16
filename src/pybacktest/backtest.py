@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from pybacktest.models import Action, Portfolio, Stock
+from pybacktest.rebalancing import RebalanceConfig, generate_rebalance_actions
 from pybacktest.results import BacktestResult, StrategyResult
 from pybacktest.strategy import StrategyManager
 
@@ -17,6 +18,7 @@ class Backtest:
         stocks: List[Stock],
         strategies: List[StrategyManager],
         initial_capital: float = 10000.0,
+        rebalance: dict | None = None,
     ):
         self.stocks = stocks
         self.strategies = strategies
@@ -29,6 +31,7 @@ class Backtest:
         self.portfolio: Portfolio = Portfolio(
             initial_capital, [stock.ticker for stock in stocks]
         )
+        self.rebalance_config = RebalanceConfig(**rebalance) if rebalance else None
 
     def get_protfolio_value(self, date: str) -> float:
         """
@@ -88,7 +91,25 @@ class Backtest:
                 stock_data = [
                     stock.cut_data(stock.start, date) for stock in self.stocks
                 ]
-                actions = strategy.apply(self.portfolio, stock_data, date)
+                if self.rebalance_config is None:
+                    actions = strategy.apply(self.portfolio, stock_data, date)
+                else:
+                    actions = strategy.apply_signals(self.portfolio, stock_data, date)
+                if self.rebalance_config is not None:
+                    weights = {
+                        ticker: config.portfolio_weight
+                        for ticker, config in strategy.strategies.items()
+                        if config.portfolio_weight > 0
+                    }
+                    rebalance_actions, rebalance_warnings = generate_rebalance_actions(
+                        self.portfolio,
+                        stock_data,
+                        weights,
+                        date,
+                        self.rebalance_config,
+                    )
+                    actions.extend(rebalance_actions)
+                    strategy_result.warnings.extend(rebalance_warnings)
                 self.execute_action(actions, date, strategy)
                 value = self.get_protfolio_value(date)
                 self.value_over_time[strategy][date] = value
