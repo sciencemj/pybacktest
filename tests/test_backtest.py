@@ -1,9 +1,9 @@
 import pytest
 import pandas as pd
 from pathlib import Path
-from src.pybacktest.backtest import Backtest
-from src.pybacktest.models import Stock, Action, Portfolio
-from src.pybacktest.strategy import Strategy, StrategyWrapper, StrategyManager
+from pybacktest.backtest import Backtest
+from pybacktest.models import Action, Portfolio, Stock
+from pybacktest.strategy import Strategy, StrategyManager, StrategyWrapper
 import json
 
 STRATEGY_FIXTURE = Path(__file__).parent / "fixtures" / "strategy_test_format.json"
