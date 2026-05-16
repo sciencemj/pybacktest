@@ -5,6 +5,8 @@ import pandas as pd
 import yfinance as yf
 from pydantic import BaseModel
 
+from pybacktest.data import normalize_ohlcv
+
 
 class Stock:
     def __init__(self, ticker: str, start: str, end: str, fetch: bool = True):
@@ -20,12 +22,7 @@ class Stock:
         return data
 
     def data_processing(self, data: pd.DataFrame) -> pd.DataFrame:
-        data.columns = ["Close", "High", "Low", "Open", "Volume"]  # Rename
-        data["Change"] = data["Close"] - data["Close"].shift(1)  # Daily Change
-        data["Change_Pct"] = (
-            data["Change"] / data["Close"].shift(1) * 100
-        )  # Daily Change Percentage
-        return data
+        return normalize_ohlcv(data, ticker=self.ticker)
 
     def cut_data(
         self, start: Union[str, pd.Timestamp], end: Union[str, pd.Timestamp]
