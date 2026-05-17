@@ -12,6 +12,7 @@ import streamlit as st
 # Color tokens (Binance design system)
 PRIMARY = "#FCD535"
 PRIMARY_ACTIVE = "#f0b90b"
+PRIMARY_DISABLED = "#3a3a1f"
 CANVAS_DARK = "#0b0e11"
 SURFACE_CARD_DARK = "#1e2329"
 SURFACE_ELEVATED_DARK = "#2b3139"
@@ -37,6 +38,7 @@ CSS_BLOCK = """
 :root {
   --bn-primary: #FCD535;
   --bn-primary-active: #f0b90b;
+  --bn-primary-disabled: #3a3a1f;
   --bn-canvas: #0b0e11;
   --bn-surface-card: #1e2329;
   --bn-surface-elevated: #2b3139;
@@ -71,7 +73,7 @@ html, body, [class*="st-"], [data-testid="stAppViewContainer"] {
   color: var(--bn-on-primary);
 }
 .stButton > button:disabled {
-  background: #3a3a1f;
+  background: var(--bn-primary-disabled);
   color: var(--bn-muted);
 }
 

@@ -30,3 +30,17 @@ def test_color_constants_exposed():
     assert theme.SURFACE_CARD_DARK == "#1e2329"
     assert theme.TRADING_UP == "#0ecb81"
     assert theme.TRADING_DOWN == "#f6465d"
+
+
+def test_python_constants_appear_in_css_block():
+    """Guards against drift between Python color constants and CSS :root variables."""
+    css = theme.CSS_BLOCK
+    assert theme.PRIMARY in css, "PRIMARY must appear in CSS_BLOCK"
+    assert theme.PRIMARY_ACTIVE in css, "PRIMARY_ACTIVE must appear in CSS_BLOCK"
+    assert theme.CANVAS_DARK in css, "CANVAS_DARK must appear in CSS_BLOCK"
+    assert theme.SURFACE_CARD_DARK in css, "SURFACE_CARD_DARK must appear in CSS_BLOCK"
+    assert theme.SURFACE_ELEVATED_DARK in css, "SURFACE_ELEVATED_DARK must appear in CSS_BLOCK"
+    assert theme.TRADING_UP in css
+    assert theme.TRADING_DOWN in css
+    assert theme.MUTED in css
+    assert theme.ON_PRIMARY in css
