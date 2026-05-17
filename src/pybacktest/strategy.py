@@ -76,6 +76,8 @@ class StrategyManager:
             for ticker, strategy in self.strategies.items()
             if strategy.portfolio_weight > 0
         }
+        # Legacy callers of StrategyManager.rebalance get actions only;
+        # weight-sum warnings flow through Backtest's new rebalance kwarg path instead.
         actions, _warnings = generate_rebalance_actions(
             portfolio,
             stocks,
