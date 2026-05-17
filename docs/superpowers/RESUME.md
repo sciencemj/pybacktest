@@ -24,94 +24,62 @@ engine-core-upgrade
 Latest commits on `engine-core-upgrade`:
 
 ```text
-e94e3f6 test: track strategy fixture for baseline tests
-efd9bb1 chore: ignore local worktrees
-197aad3 docs: add engine core implementation plan
-7faa90d docs: add engine core upgrade design
+685b8fc feat: add portfolio projection bands
+4c33340 feat: add liquidity-aware execution
+7616bab fix: declare future annotations for PEP 604 unions
+d7236db feat: add configurable portfolio rebalancing
+3081bb9 feat: add volume-aware signal evaluation
+6295016 fix: route get_monthly_snapshots through structured result
+b5709d7 feat: return structured backtest results
+165fceb feat: normalize market data robustly
+c6e505e test: fix package import baseline
 ```
 
-## What Was Done
+## Progress
 
-1. Created isolated worktree at `.worktrees/engine-core-upgrade`.
-2. Added `.worktrees/` to `.gitignore` on main before creating the worktree.
-3. Discovered fresh worktree baseline failed because `strategy_test_format.json` was ignored and missing.
-4. Added tracked fixture:
+Tasks 1–6 are fully reviewed (spec + code quality) and merged into the branch.
 
-```text
-tests/fixtures/strategy_test_format.json
-```
+Task 7 (portfolio projection) is **implemented and committed** (`685b8fc`), but the two-stage review has NOT yet run:
 
-5. Updated `tests/test_backtest.py` to load that fixture relative to the test file.
-6. Committed the fixture fix:
-
-```text
-e94e3f6 test: track strategy fixture for baseline tests
-```
+- Spec compliance review: pending
+- Code quality review: pending
 
 ## Current Test Status
-
-Run from the worktree:
 
 ```bash
 uv run pytest -q
 ```
 
-Current result:
-
 ```text
-2 errors during collection
-ModuleNotFoundError: No module named 'pybacktest'
+26 passed, 1 warning
 ```
 
-The failing imports are:
-
-- `tests/test_backtest.py` imports `src.pybacktest.backtest`, which then imports `pybacktest.models`.
-- `tests/test_features.py` imports `pybacktest.backtest`.
-
-This is the expected next issue. It matches Task 1 in the implementation plan.
-
-Diagnostic already verified:
-
-```bash
-PYTHONPATH=src uv run pytest tests/test_backtest.py::test_strategy_init tests/test_backtest.py::test_strategy -q
-```
-
-Result:
-
-```text
-2 passed
-```
+The single warning is the pre-existing `UserWarning` from `test_fair_cash_allocation` (out of scope).
 
 ## Next Step
 
-Resume with Task 1 from `docs/superpowers/plans/2026-05-11-engine-core-upgrade.md`:
+Resume the Superpowers `subagent-driven-development` workflow at Task 7's review stage:
 
-```text
-Task 1: Fix Test Import Baseline
-```
+1. Dispatch the **spec compliance reviewer** against commit `685b8fc` per the plan in `docs/superpowers/plans/2026-05-11-engine-core-upgrade.md` (Task 7).
+2. If issues, fix; otherwise dispatch the **code quality reviewer**.
+3. On approval, mark Task 7 complete and proceed to Task 8 (README + smoke test) and Task 9 (final integration verification).
 
-Required changes:
+Plan locations:
+- Task 7: lines 1310-1513
+- Task 8: lines 1516-1619
+- Task 9: lines 1622-1678
 
-- Add pytest config to `pyproject.toml`:
+## Outstanding Notes
 
-```toml
-[tool.pytest.ini_options]
-pythonpath = ["src"]
-```
-
-- Change legacy imports in `tests/test_backtest.py` from `src.pybacktest...` to `pybacktest...`.
-- Run `uv run pytest -q`.
-- Commit with:
-
-```text
-test: fix package import baseline
-```
+- ty diagnostics on new modules (`Cannot resolve imported module pybacktest.projection`) are transient cache misses; pytest imports work.
+- `backtest.py:81 end_date: str = None` is pre-existing and remains untouched. Out of scope.
+- Plan defects encountered along the way (signals.py short-circuit + volume-ratio rolling, split fixture) were adjudicated by the controller and documented in commit messages / test fixtures.
 
 ## Process Notes
 
 The user selected subagent-driven execution. Continue with the Superpowers `subagent-driven-development` workflow:
 
-1. Implement one plan task.
+1. Implement one plan task (already done for Task 7).
 2. Run spec compliance review.
 3. Run code quality review.
 4. Only then mark the task complete and move to the next task.
