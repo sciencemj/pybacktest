@@ -37,3 +37,6 @@ dev = [
     "streamlit>=1.50.0",
     "watchdog>=6.0.0",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

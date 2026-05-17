@@ -1,9 +1,12 @@
 import pytest
 import pandas as pd
-from src.pybacktest.backtest import Backtest
-from src.pybacktest.models import Stock, Action, Portfolio
-from src.pybacktest.strategy import Strategy, StrategyWrapper, StrategyManager
+from pathlib import Path
+from pybacktest.backtest import Backtest
+from pybacktest.models import Action, Portfolio, Stock
+from pybacktest.strategy import Strategy, StrategyManager, StrategyWrapper
 import json
+
+STRATEGY_FIXTURE = Path(__file__).parent / "fixtures" / "strategy_test_format.json"
 
 def test_get_portfolio_value():
     stock_a = Stock('360750.KS', start='2022-01-01', end='2022-01-10', fetch=False)
@@ -57,7 +60,7 @@ def test_execute_action():
     assert backtest.portfolio.cash == 1000.0 - (5 * 100.0) + (3 * 102.0)
 
 def test_strategy_init():
-    with open('strategy_test_format.json', 'r') as json_file:
+    with STRATEGY_FIXTURE.open('r') as json_file:
         test_data = json.load(json_file)
     strategy = StrategyWrapper.model_validate(test_data)
     assert strategy['AAPL'].buy.indicator == ["current", "Close"]
@@ -65,7 +68,7 @@ def test_strategy_init():
     assert strategy['TQQQ'].sell.quantity == ["percent", 100]
 
 def test_strategy():
-    with open('strategy_test_format.json', 'r') as json_file:
+    with STRATEGY_FIXTURE.open('r') as json_file:
         test_data = json.load(json_file)
     strategy = StrategyManager("AAPL and TQQQ", StrategyWrapper.model_validate(test_data))
     stock_a = Stock('AAPL', start='2022-01-01', end='2022-01-10', fetch=False)
