@@ -24,10 +24,11 @@ def test_t_returns_english_string():
 
 
 def test_t_returns_korean_string():
-    # Korean is a non-ASCII string; just confirm it's present and non-empty.
+    # Korean is a non-ASCII string; assert known content to catch value corruption.
     value = i18n.T("page_title", "ko")
     assert isinstance(value, str)
     assert len(value) > 0
+    assert "자동매매" in value, "Korean page_title must contain '자동매매' (자동매매 전략)"
 
 
 def test_t_raises_on_missing_key():
