@@ -156,7 +156,8 @@ def input_strategy_details(
 ) -> None:
     """Render strategy-side form widgets with stable per-language keys.
 
-    Layout: single-column grouped sections (TARGET / SIGNAL / TRIGGER / ACTION).
+    Layout: each logical section (TARGET / SIGNAL / TRIGGER / ACTION) lives
+    in its own bordered card for visual grouping.
     """
     from streamlit_ui.i18n import T
 
@@ -167,70 +168,74 @@ def input_strategy_details(
     opts_qty = list(allowed_qty_types)
 
     # -- TARGET ---------------------------------------------------------------
-    st.text_input(
-        T("target_ticker_label", lang),
-        key=f"{state_key_prefix}_ticker",
-    )
-
-    # -- SIGNAL ---------------------------------------------------------------
-    st.caption(T("base_group_label", lang))
-    c1, c2 = st.columns(2)
-    c1.selectbox(
-        T("aggregation_method_label", lang),
-        opts_agg,
-        key=f"{state_key_prefix}_by_agg",
-    )
-    c2.selectbox(
-        T("field_label", lang),
-        opts_field,
-        key=f"{state_key_prefix}_by_field",
-    )
-    c3, c4 = st.columns(2)
-    use_period = c3.checkbox(
-        T("use_period_label", lang),
-        key=f"{state_key_prefix}_use_period",
-    )
-    if use_period:
-        c4.number_input(
-            T("period_days_label", lang),
-            min_value=1,
-            step=1,
-            key=f"{state_key_prefix}_period_val",
+    with st.container(border=True):
+        st.text_input(
+            T("target_ticker_label", lang),
+            key=f"{state_key_prefix}_ticker",
         )
 
+    # -- SIGNAL ---------------------------------------------------------------
+    with st.container(border=True):
+        st.caption(T("base_group_label", lang))
+        c1, c2 = st.columns(2)
+        c1.selectbox(
+            T("aggregation_method_label", lang),
+            opts_agg,
+            key=f"{state_key_prefix}_by_agg",
+        )
+        c2.selectbox(
+            T("field_label", lang),
+            opts_field,
+            key=f"{state_key_prefix}_by_field",
+        )
+        c3, c4 = st.columns(2)
+        use_period = c3.checkbox(
+            T("use_period_label", lang),
+            key=f"{state_key_prefix}_use_period",
+        )
+        if use_period:
+            c4.number_input(
+                T("period_days_label", lang),
+                min_value=1,
+                step=1,
+                key=f"{state_key_prefix}_period_val",
+            )
+
     # -- TRIGGER --------------------------------------------------------------
-    st.caption(T("criteria_group_label", lang))
-    c5, c6 = st.columns(2)
-    c5.selectbox(
-        T("criteria_type_label", lang),
-        opts_crit,
-        key=f"{state_key_prefix}_crit_type",
-    )
-    c6.number_input(
-        T("criteria_value_label", lang),
-        step=0.1,
-        format="%.2f",
-        key=f"{state_key_prefix}_crit_val",
-    )
+    with st.container(border=True):
+        st.caption(T("criteria_group_label", lang))
+        c5, c6 = st.columns(2)
+        c5.selectbox(
+            T("criteria_type_label", lang),
+            opts_crit,
+            key=f"{state_key_prefix}_crit_type",
+        )
+        c6.number_input(
+            T("criteria_value_label", lang),
+            step=0.1,
+            format="%.2f",
+            key=f"{state_key_prefix}_crit_val",
+        )
 
     # -- ACTION ---------------------------------------------------------------
-    st.caption(T("quantity_group_label", lang))
-    c7, c8 = st.columns(2)
-    c7.selectbox(
-        T("quantity_unit_label", lang),
-        opts_qty,
-        key=f"{state_key_prefix}_qty_type",
-    )
-    c8.number_input(
-        T("quantity_value_label", lang),
-        step=1.0,
-        key=f"{state_key_prefix}_qty_val",
-    )
-    st.selectbox(
-        T("price_point_label", lang),
-        opts_trade_as,
-        key=f"{state_key_prefix}_trade_as",
-    )
+    with st.container(border=True):
+        st.caption(T("quantity_group_label", lang))
+        c7, c8 = st.columns(2)
+        c7.selectbox(
+            T("quantity_unit_label", lang),
+            opts_qty,
+            key=f"{state_key_prefix}_qty_type",
+        )
+        c8.number_input(
+            T("quantity_value_label", lang),
+            step=1.0,
+            key=f"{state_key_prefix}_qty_val",
+        )
+        st.selectbox(
+            T("price_point_label", lang),
+            opts_trade_as,
+            key=f"{state_key_prefix}_trade_as",
+        )
 
 
 def _save_strategy_callback(lang: str, main_ticker: str) -> None:

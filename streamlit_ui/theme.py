@@ -202,6 +202,16 @@ html, body, [data-testid="stAppViewContainer"] {
   color: var(--bn-body);
   margin: 0;
 }
+
+/* Bordered containers (st.container(border=True)) styled as Binance dark cards */
+[data-testid="stVerticalBlockBorderWrapper"] {
+  background: var(--bn-surface-card);
+  border-radius: 8px;
+  border-color: var(--bn-hairline) !important;
+}
+[data-testid="stVerticalBlockBorderWrapper"] > div {
+  padding: 8px 16px;
+}
 </style>
 """
 
