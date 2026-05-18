@@ -66,7 +66,8 @@ def test_describe_rule_buy_split_quantity():
         "price_point": "Close",
     }
     _, action = _describe_rule(side, side_kind="buy", lang="en")
-    assert "split" in action.lower() or "4" in action
+    assert "4" in action
+    assert "split" in action.lower() or "분할" in action
 
 
 def test_describe_rule_korean_returns_korean_strings():
@@ -79,3 +80,4 @@ def test_describe_rule_korean_returns_korean_strings():
     condition, action = _describe_rule(side, side_kind="buy", lang="ko")
     assert "매수" in action
     assert "하락" in condition
+    assert "0.50" in condition
