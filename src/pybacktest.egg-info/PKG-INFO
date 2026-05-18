@@ -68,32 +68,32 @@ strategy_json = {
     "AAPL": {
         "buy": {
             "ticker": "AAPL",
-            "by": ["current", "Change_Pct"],
-            "period": False,
-            "criteria": ["percent-change", 0.5],
+            "indicator": ["current", "Change_Pct"],
+            "window": False,
+            "threshold": ["percent-change", 0.5],
             "quantity": ["count", 10]
         },
         "sell": {
             "ticker": "AAPL",
-            "by": ["current", "Close"],
-            "period": False,
-            "criteria": ["profit-rate", 10],
+            "indicator": ["current", "Close"],
+            "window": False,
+            "threshold": ["profit-rate", 10],
             "quantity": ["percent", 100]
         }
     },
     "TQQQ": {
         "buy": {
             "ticker": "TQQQ",
-            "by": ["average", "Close"],
-            "period": 3,
-            "criteria": ["point", 0.05],
+            "indicator": ["average", "Close"],
+            "window": 3,
+            "threshold": ["point", 0.05],
             "quantity": ["value", 1000]
         },
         "sell": {
             "ticker": "AAPL",
-            "by": ["current", "Change_Pct"],
-            "period": False,
-            "criteria": ["percent-change", -3],
+            "indicator": ["current", "Change_Pct"],
+            "window": False,
+            "threshold": ["percent-change", -3],
             "quantity":["percent", 50]
         }
     }
@@ -110,6 +110,24 @@ backtest.run()
 backtest.plot_performance()
 ```
 
+### Rebalancing, Execution Limits, and Projection
+
+`Backtest` also accepts optional `rebalance`, `execution`, and `projection`
+keyword arguments to enable periodic portfolio rebalancing, per-day liquidity
+caps on executed orders, and Monte Carlo projection of future portfolio value:
+
+```python
+backtest = Backtest(
+    [apple, tqqq],
+    [strategy],
+    100000,
+    rebalance={"enabled": True, "frequency": "monthly", "day": 15, "mode": "full"},
+    execution={"liquidity_limit": 0.05},
+    projection={"enabled": True, "days": 30, "scenarios": 500},
+)
+results = backtest.run()
+```
+
 ## Strategy Configuration
 
 Trading strategies are defined in a JSON format. Each key in the JSON object represents a stock ticker. The value is an object with `buy` and `sell` rules.
@@ -119,17 +137,17 @@ Trading strategies are defined in a JSON format. Each key in the JSON object rep
 A `TradeAction` object has the following fields:
 
 - `ticker`: The ticker of the stock to trade.
-- `by`: A list specifying the value to use for comparison.
+- `indicator`: A list specifying the value to use for comparison.
   - The first element can be `"average"` or `"current"`.
   - The second element is the field to use from the stock data (e.g., `"Close"`, `"Change_Pct"`).
-- `period`: The period for the moving average if `by` is `"average"`. `false` if not used.
-- `criteria`: The condition for the trade.
-  - The first element is the type of criteria (e.g., `"percent-change"`, `"profit-rate"`, `"point"`).
-  - The second element is the value for the criteria.
+- `window`: The period for the moving average if `indicator` is `"average"`. `false` if not used.
+- `threshold`: The condition for the trade.
+  - The first element is the type of threshold (e.g., `"percent-change"`, `"profit-rate"`, `"point"`).
+  - The second element is the value for the threshold.
 - `quantity`: The quantity to trade.
   - The first element is the type of quantity (e.g., `"count"`, `"percent"`, `"value"`).
   - The second element is the value for the quantity.
-- `trade_as`: The price to use for the trade (e.g., `"Close"`, `"Open"`).
+- `price_point`: The price to use for the trade (e.g., `"Close"`, `"Open"`).
 
 ## Streamlit UI
 
