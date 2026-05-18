@@ -56,6 +56,8 @@ LABELS: dict[str, dict[str, str]] = {
         "card_delete_button": "Delete",
         "view_raw_json_expander": "View Raw JSON",
         "download_json_button": "Download JSON File",
+        "filename_label": "Filename",
+        "filename_placeholder": "trading_strategies.json",
         "json_empty_message": "Data is empty. Add a strategy from the left or upload a JSON file.",
         # Rule descriptions
         "describe_when": "When",
@@ -152,6 +154,8 @@ LABELS: dict[str, dict[str, str]] = {
         "card_delete_button": "삭제",
         "view_raw_json_expander": "원본 JSON 보기",
         "download_json_button": "JSON 파일 다운로드",
+        "filename_label": "파일명",
+        "filename_placeholder": "trading_strategies.json",
         # Existing: "데이터가 비어있습니다. 왼쪽에서 추가하거나 JSON 파일을 업로드하세요."
         "json_empty_message": "데이터가 비어있습니다. 왼쪽에서 추가하거나 JSON 파일을 업로드하세요.",
         # Rule descriptions

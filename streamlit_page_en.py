@@ -141,16 +141,30 @@ def _editor_right() -> None:
     st.markdown("<br>", unsafe_allow_html=True)
     for ticker, strategy in strategies.items():
         render_strategy_card(ticker, strategy, _LANG)
-    with st.expander(T("view_raw_json_expander", _LANG)):
-        json_str = json.dumps(strategies, indent=4, ensure_ascii=False)
-        st.code(json_str, language="json")
+    json_str = json.dumps(strategies, indent=4, ensure_ascii=False)
+    col_name, col_dl = st.columns([2, 1])
+    with col_name:
+        filename_input = st.text_input(
+            T("filename_label", _LANG),
+            value="trading_strategies.json",
+            key="en_download_filename",
+            label_visibility="collapsed",
+            placeholder=T("filename_placeholder", _LANG),
+        )
+    download_filename = filename_input.strip() or "trading_strategies.json"
+    if not download_filename.endswith(".json"):
+        download_filename = f"{download_filename}.json"
+    with col_dl:
         st.download_button(
             label=T("download_json_button", _LANG),
             data=json_str,
-            file_name="trading_strategies.json",
+            file_name=download_filename,
             mime="application/json",
             key="en_download",
+            use_container_width=True,
         )
+    with st.expander(T("view_raw_json_expander", _LANG)):
+        st.code(json_str, language="json")
 
 
 def _backtest_tab() -> None:
