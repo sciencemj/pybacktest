@@ -259,6 +259,7 @@ def _backtest_tab() -> None:
                 render_metric(T("trade_count_metric", _LANG), str(trade_count))
             with cols[3]:
                 render_metric(T("ticker_count_metric", _LANG), str(ticker_count))
+            st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
             st.pyplot(backtest.plot_performance(instance_show=False))
 
 
