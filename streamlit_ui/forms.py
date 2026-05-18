@@ -20,6 +20,12 @@ WIDGET_KEY_PREFIXES: tuple[str, ...] = (
 )
 
 # Exact widget keys (no over-match via startswith).
+# Note: `en_main_ticker` / `ko_main_ticker` are intentionally NOT purged on JSON
+# upload. Keeping the user's typed ticker visible after they upload a new JSON
+# is the desired UX — they can then explicitly switch to a ticker that exists
+# in the uploaded data. `_prev_main_ticker` IS purged so the next render's
+# _maybe_reseed_widgets will reseed form widgets from the (now updated)
+# strategies dict.
 WIDGET_KEY_EXACT: frozenset[str] = frozenset({
     "en_active_side", "ko_active_side",
     "en_prev_main_ticker", "ko_prev_main_ticker",

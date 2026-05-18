@@ -163,9 +163,17 @@ def _backtest_tab() -> None:
             start = c1.date_input(
                 T("start_date_label", _LANG),
                 value=pd.to_datetime("2023-01-01"),
+                key="en_backtest_start",
             )
-            end = c2.date_input(T("end_date_label", _LANG))
-            initial_cash = st.number_input(T("initial_capital_label", _LANG), value=10000)
+            end = c2.date_input(
+                T("end_date_label", _LANG),
+                key="en_backtest_end",
+            )
+            initial_cash = st.number_input(
+                T("initial_capital_label", _LANG),
+                value=10000,
+                key="en_backtest_initial_cash",
+            )
             run_button = st.form_submit_button(
                 T("start_backtest_button", _LANG),
                 use_container_width=True,
@@ -187,7 +195,7 @@ def _backtest_tab() -> None:
         if backtest:
             with st.container(border=True):
                 st.subheader(T("trade_history_header", _LANG))
-                for ticker, trades in backtest.trades.items():
+                for trades in backtest.trades.values():
                     df = pd.DataFrame(trades)
                     if not df.empty:
                         df["value"] = df["quantity"] * df["price"]
@@ -228,6 +236,8 @@ def _backtest_tab() -> None:
     with col_results:
         backtest = st.session_state.get("backtest")
         if backtest:
+            end = st.session_state["en_backtest_end"]
+            initial_cash = st.session_state["en_backtest_initial_cash"]
             final_value = backtest.get_protfolio_value(end.strftime("%Y-%m-%d"))
             profit_rate = final_value / initial_cash
             trade_count = sum(len(t) for t in backtest.trades.values())
