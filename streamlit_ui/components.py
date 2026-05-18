@@ -70,10 +70,11 @@ def _describe_rule(
 def render_page_header(title: str, icon: str = "📈") -> None:
     """Render the page header band with yellow icon + title."""
     safe_title = html.escape(title)
+    safe_icon = html.escape(icon)
     st.markdown(
         f"""
         <div class="bn-page-header">
-          <div style="font-size: 40px;">{icon}</div>
+          <div style="font-size: 40px;">{safe_icon}</div>
           <h1 class="bn-page-header-title">{safe_title}</h1>
         </div>
         """,
@@ -143,7 +144,7 @@ def render_strategy_card(
     """Render a strategy summary card + Edit / Delete buttons."""
     from streamlit_ui.forms import _delete_strategy_callback, _edit_strategy_callback
 
-    weight = strategy.get("portfolio_weight", 0.0)
+    weight = float(strategy.get("portfolio_weight", 0.0))
     weight_pct = f"{weight * 100:.0f}%"
     safe_ticker = html.escape(ticker)
 
