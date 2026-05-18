@@ -26,9 +26,12 @@ def _describe_rule(
              "price_point": "Close"}
         -> ("When current Close drops 0.50%", "Buy 10 shares at Close")
     """
+    # Required fields: raise if missing (caught by render_strategy_card's
+    # try/except to display "?"). Optional fields use the same defaults as
+    # pybacktest.strategy.TradeAction.
     agg_raw, field = side["indicator"]
     crit_type, crit_val = side["threshold"]
-    qty_type, qty_val = side["quantity"]
+    qty_type, qty_val = side.get("quantity", ["percent", 100])
     price_point = side.get("price_point", "Close")
 
     agg = T(f"describe_{agg_raw}", lang) if agg_raw in ("current", "average") else agg_raw

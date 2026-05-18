@@ -81,3 +81,18 @@ def test_describe_rule_korean_returns_korean_strings():
     assert "매수" in action
     assert "하락" in condition
     assert "0.50" in condition
+
+
+def test_describe_rule_missing_quantity_uses_pydantic_default():
+    """Match pybacktest.strategy.TradeAction default (quantity: ["percent", 100])."""
+    side = {
+        "indicator": ["current", "Close"],
+        "threshold": ["percent-change", -3.0],
+        # quantity intentionally omitted
+        # price_point intentionally omitted
+    }
+    condition, action = _describe_rule(side, side_kind="sell", lang="en")
+    assert "drops" in condition
+    assert "Sell" in action
+    assert "100%" in action  # default quantity is ["percent", 100]
+    assert "Close" in action  # default price_point is "Close"
