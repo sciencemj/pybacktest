@@ -237,6 +237,7 @@ def _save_strategy_callback(lang: str, main_ticker: str) -> None:
     buy = _collect_form_dict(f"{lang}_buy", ("count", "percent", "value", "split"))
     sell = _collect_form_dict(f"{lang}_sell", ("count", "percent", "value"))
     weight = float(st.session_state.get(f"{lang}_weight_{main_ticker}", 0.0))
+    # "strategies" is guaranteed initialized by streamlit_page.py entry router.
     st.session_state["strategies"][main_ticker] = {
         "buy": buy,
         "sell": sell,
@@ -257,7 +258,10 @@ def _delete_strategy_callback(ticker: str) -> None:
 def _edit_strategy_callback(lang: str, ticker: str) -> None:
     """on_click callback for the Edit button on a strategy card.
 
-    Sets the main ticker input to ``ticker`` so ``_maybe_reseed_widgets``
-    will pick it up on the next render and re-seed form widgets.
+    Sets the main ticker input to ``ticker`` and clears the prev-ticker
+    sentinel so ``_maybe_reseed_widgets`` will reseed on the next render.
+    Clearing the sentinel is required so re-clicking Edit on the same
+    ticker (e.g. after saving) still forces a refresh of widget state.
     """
     st.session_state[f"{lang}_main_ticker"] = ticker
+    st.session_state.pop(f"{lang}_prev_main_ticker", None)
