@@ -50,7 +50,7 @@ CSS_BLOCK = """
   --bn-on-primary: #181a20;
 }
 
-html, body, [class*="st-"], [data-testid="stAppViewContainer"] {
+html, body, [data-testid="stAppViewContainer"] {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
 

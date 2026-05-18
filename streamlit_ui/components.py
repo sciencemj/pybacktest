@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+from textwrap import dedent
 from typing import Literal
 
 import streamlit as st
@@ -72,12 +73,12 @@ def render_page_header(title: str, icon: str = "📈") -> None:
     safe_title = html.escape(title)
     safe_icon = html.escape(icon)
     st.markdown(
-        f"""
-        <div class="bn-page-header">
-          <div style="font-size: 40px;">{safe_icon}</div>
-          <h1 class="bn-page-header-title">{safe_title}</h1>
-        </div>
-        """,
+        dedent(f"""
+            <div class="bn-page-header">
+              <div style="font-size: 40px;">{safe_icon}</div>
+              <h1 class="bn-page-header-title">{safe_title}</h1>
+            </div>
+        """),
         unsafe_allow_html=True,
     )
 
@@ -100,12 +101,12 @@ def render_metric(
     safe_label = html.escape(label)
     safe_value = html.escape(value)
     st.markdown(
-        f"""
-        <div class="bn-metric">
-          <div class="bn-metric-label">{safe_label}</div>
-          <div class="bn-metric-value {kind}">{safe_value}</div>
-        </div>
-        """,
+        dedent(f"""
+            <div class="bn-metric">
+              <div class="bn-metric-label">{safe_label}</div>
+              <div class="bn-metric-value {kind}">{safe_value}</div>
+            </div>
+        """),
         unsafe_allow_html=True,
     )
 
@@ -160,26 +161,26 @@ def render_strategy_card(
         label_text = T(f"{side_kind}_pill_label", lang)
         safe_label = html.escape(label_text)
         sides_html_parts.append(
-            f"""
-            <div class="bn-side-block {side_kind}">
-              <div class="bn-side-label {side_kind}">{safe_label}</div>
-              <div class="bn-side-condition">{html.escape(condition)}</div>
-              <div class="bn-side-action">{html.escape(action)}</div>
-            </div>
-            """
+            dedent(f"""
+                <div class="bn-side-block {side_kind}">
+                  <div class="bn-side-label {side_kind}">{safe_label}</div>
+                  <div class="bn-side-condition">{html.escape(condition)}</div>
+                  <div class="bn-side-action">{html.escape(action)}</div>
+                </div>
+            """).strip()
         )
     sides_html = "".join(sides_html_parts)
 
     st.markdown(
-        f"""
-        <div class="bn-strategy-card">
-          <div class="bn-strategy-card-header">
-            <div class="bn-strategy-card-ticker">{safe_ticker}</div>
-            <div class="bn-strategy-card-weight">{weight_pct}</div>
-          </div>
-          {sides_html}
-        </div>
-        """,
+        dedent(f"""
+            <div class="bn-strategy-card">
+              <div class="bn-strategy-card-header">
+                <div class="bn-strategy-card-ticker">{safe_ticker}</div>
+                <div class="bn-strategy-card-weight">{weight_pct}</div>
+              </div>
+              {sides_html}
+            </div>
+        """),
         unsafe_allow_html=True,
     )
 

@@ -17,7 +17,6 @@ from streamlit_ui import (
     _save_strategy_callback,
     inject_global_styles,
     input_strategy_details,
-    render_buy_sell_selector,
     render_metric,
     render_page_header,
     render_section_header,
@@ -88,14 +87,14 @@ def _editor_left(main_ticker: str) -> None:
         key=f"{_LANG}_weight_{main_ticker_input}",
     )
 
-    active_side = render_buy_sell_selector(f"{_LANG}_active_side", _LANG)
-    if active_side == "buy":
+    tab_buy, tab_sell = st.tabs([T("buy_pill_label", _LANG), T("sell_pill_label", _LANG)])
+    with tab_buy:
         input_strategy_details(
             f"{_LANG}_buy",
             allowed_qty_types=("count", "percent", "value", "split"),
             lang=_LANG,
         )
-    else:
+    with tab_sell:
         input_strategy_details(
             f"{_LANG}_sell",
             allowed_qty_types=("count", "percent", "value"),
