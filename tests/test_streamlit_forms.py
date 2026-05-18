@@ -139,3 +139,18 @@ def test_extract_defaults_window_int_enables_period():
     result = _extract_defaults(saved, default_ticker="AAPL")
     assert result["use_period"] is True
     assert result["period_val"] == 5
+
+
+def test_collect_form_dict_clamps_invalid_qty_type():
+    """If session_state has a qty_type not in allowed_qty, fall back to the first allowed."""
+    state = _seed_state("en_buy", **{"en_buy_qty_type": "split"})
+    # split is NOT in this allowed list
+    result = _collect_form_dict("en_buy", ("count", "percent"), state=state)
+    assert result["quantity"][0] == "count"  # fell back to allowed_qty[0]
+
+
+def test_collect_form_dict_rejects_empty_allowed_qty():
+    """Empty allowed_qty must raise rather than silently IndexError."""
+    state = _seed_state("en_buy")
+    with pytest.raises(ValueError, match="allowed_qty"):
+        _collect_form_dict("en_buy", (), state=state)

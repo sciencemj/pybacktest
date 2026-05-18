@@ -8,23 +8,28 @@ _save_strategy_callback, _maybe_reseed_widgets) are added in Task 4.
 
 from __future__ import annotations
 
-from typing import Optional, Sequence
+from collections.abc import MutableMapping, Sequence
+from typing import Any
 
 import streamlit as st
 
-# Prefixes of widget keys that belong to the strategy form.
+# Prefixes of widget keys that belong to the strategy form (each ends with _).
 WIDGET_KEY_PREFIXES: tuple[str, ...] = (
     "en_buy_", "en_sell_", "ko_buy_", "ko_sell_",
     "en_weight_", "ko_weight_",
+)
+
+# Exact widget keys (no over-match via startswith).
+WIDGET_KEY_EXACT: frozenset[str] = frozenset({
     "en_active_side", "ko_active_side",
     "en_prev_main_ticker", "ko_prev_main_ticker",
-)
+})
 
 
 def _collect_form_dict(
     prefix: str,
     allowed_qty: Sequence[str],
-    state: Optional[dict] = None,
+    state: MutableMapping[str, Any] | None = None,
 ) -> dict:
     """Read widget state by prefix; return a dict matching TradeAction schema.
 
@@ -51,6 +56,8 @@ def _collect_form_dict(
     crit_type = state[f"{prefix}_crit_type"]
     crit_val = float(state[f"{prefix}_crit_val"])
     qty_type = state[f"{prefix}_qty_type"]
+    if not allowed_qty:
+        raise ValueError("allowed_qty must not be empty")
     if qty_type not in allowed_qty:
         qty_type = allowed_qty[0]
     qty_val_raw = state[f"{prefix}_qty_val"]
@@ -71,7 +78,7 @@ def _collect_form_dict(
 
 def _apply_uploaded_json(
     loaded_data: dict,
-    state: Optional[dict] = None,
+    state: MutableMapping[str, Any] | None = None,
 ) -> None:
     """Clear stale form widget state, then set strategies.
 
@@ -84,13 +91,14 @@ def _apply_uploaded_json(
     keys_to_delete = [
         key for key in list(state.keys())
         if any(key.startswith(p) for p in WIDGET_KEY_PREFIXES)
+        or key in WIDGET_KEY_EXACT
     ]
     for key in keys_to_delete:
         del state[key]
     state["strategies"] = loaded_data
 
 
-def _extract_defaults(saved_data: Optional[dict], default_ticker: str) -> dict:
+def _extract_defaults(saved_data: dict | None, default_ticker: str) -> dict:
     """Extract widget default values from a saved strategy buy/sell dict."""
     saved_data = saved_data or {}
     saved_by = saved_data.get("indicator", ["current", "Close"])
