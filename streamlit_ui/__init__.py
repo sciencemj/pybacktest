@@ -1,7 +1,6 @@
 """Streamlit UI helpers for the pybacktest strategy editor and backtest page."""
 
 from streamlit_ui.components import (
-    render_buy_sell_selector,
     render_metric,
     render_page_header,
     render_section_header,
@@ -19,7 +18,6 @@ from streamlit_ui.theme import inject_global_styles
 __all__ = [
     "T",
     "inject_global_styles",
-    "render_buy_sell_selector",
     "render_metric",
     "render_page_header",
     "render_section_header",
