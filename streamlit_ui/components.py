@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import html
 from typing import Literal
+
+import streamlit as st
 
 from streamlit_ui.i18n import T
 
@@ -59,3 +62,138 @@ def _describe_rule(
 
     action = f"{verb} {qty_str} {T('describe_at_price', lang)} {price_point}"
     return condition, action
+
+
+# -- Render helpers (Streamlit-runtime; not unit-tested) -----------------------
+
+
+def render_page_header(title: str, icon: str = "📈") -> None:
+    """Render the page header band with yellow icon + title."""
+    safe_title = html.escape(title)
+    st.markdown(
+        f"""
+        <div class="bn-page-header">
+          <div style="font-size: 40px;">{icon}</div>
+          <h1 class="bn-page-header-title">{safe_title}</h1>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_section_header(text: str) -> None:
+    """Render an h2 section header with the yellow accent rule."""
+    safe = html.escape(text)
+    st.markdown(
+        f'<div class="bn-section-header"><h2>{safe}</h2></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_metric(
+    label: str,
+    value: str,
+    kind: Literal["neutral", "up", "down", "accent"] = "neutral",
+) -> None:
+    """Render a metric callout card."""
+    safe_label = html.escape(label)
+    safe_value = html.escape(value)
+    st.markdown(
+        f"""
+        <div class="bn-metric">
+          <div class="bn-metric-label">{safe_label}</div>
+          <div class="bn-metric-value {kind}">{safe_value}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_buy_sell_selector(state_key: str, lang: str) -> Literal["buy", "sell"]:
+    """Render the two-pill Buy/Sell selector. Returns the active side."""
+    if state_key not in st.session_state:
+        st.session_state[state_key] = "buy"
+    active = st.session_state[state_key]
+
+    col_buy, col_sell = st.columns(2)
+    if col_buy.button(
+        T("buy_pill_label", lang),
+        use_container_width=True,
+        key=f"{state_key}_buy_btn",
+        type="primary" if active == "buy" else "secondary",
+    ):
+        st.session_state[state_key] = "buy"
+        st.rerun()
+    if col_sell.button(
+        T("sell_pill_label", lang),
+        use_container_width=True,
+        key=f"{state_key}_sell_btn",
+        type="primary" if active == "sell" else "secondary",
+    ):
+        st.session_state[state_key] = "sell"
+        st.rerun()
+    return st.session_state[state_key]
+
+
+def render_strategy_card(
+    ticker: str,
+    strategy: dict,
+    lang: str,
+) -> None:
+    """Render a strategy summary card + Edit / Delete buttons."""
+    from streamlit_ui.forms import _delete_strategy_callback, _edit_strategy_callback
+
+    weight = strategy.get("portfolio_weight", 0.0)
+    weight_pct = f"{weight * 100:.0f}%"
+    safe_ticker = html.escape(ticker)
+
+    sides_html_parts = []
+    for side_kind in ("buy", "sell"):
+        side = strategy.get(side_kind)
+        if not side:
+            continue
+        try:
+            condition, action = _describe_rule(side, side_kind=side_kind, lang=lang)
+        except (KeyError, TypeError, ValueError):
+            condition, action = "?", "?"
+        label_text = T(f"{side_kind}_pill_label", lang)
+        safe_label = html.escape(label_text)
+        sides_html_parts.append(
+            f"""
+            <div class="bn-side-block {side_kind}">
+              <div class="bn-side-label {side_kind}">{safe_label}</div>
+              <div class="bn-side-condition">{html.escape(condition)}</div>
+              <div class="bn-side-action">{html.escape(action)}</div>
+            </div>
+            """
+        )
+    sides_html = "".join(sides_html_parts)
+
+    st.markdown(
+        f"""
+        <div class="bn-strategy-card">
+          <div class="bn-strategy-card-header">
+            <div class="bn-strategy-card-ticker">{safe_ticker}</div>
+            <div class="bn-strategy-card-weight">{weight_pct}</div>
+          </div>
+          {sides_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    col_edit, col_delete = st.columns(2)
+    col_edit.button(
+        T("card_edit_button", lang),
+        key=f"card_edit_{lang}_{ticker}",
+        use_container_width=True,
+        on_click=_edit_strategy_callback,
+        args=(lang, ticker),
+    )
+    col_delete.button(
+        T("card_delete_button", lang),
+        key=f"card_delete_{lang}_{ticker}",
+        use_container_width=True,
+        on_click=_delete_strategy_callback,
+        args=(ticker,),
+    )
