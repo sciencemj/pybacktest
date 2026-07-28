@@ -374,7 +374,10 @@ MCP가 사용하는 `StrategySpec`은 Pydantic discriminated union으로 정의�
       }
     }
   ],
-  "risk": {"type": "max_position_weight", "value": 0.6}
+  "sizer": {"type": "default"},
+  "risk": [
+    {"type": "max_position_weight", "value": 0.6}
+  ]
 }
 ```
 
