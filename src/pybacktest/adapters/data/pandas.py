@@ -120,6 +120,10 @@ def _validate_utc_index(index: pd.Index) -> None:
         raise DataValidationError(
             "frame index must use the UTC timezone."
         )
+    if index.hasnans:
+        raise DataValidationError(
+            "frame index cannot contain NaT timestamps."
+        )
 
 
 def _canonical_instrument_values(

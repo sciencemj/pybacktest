@@ -1,6 +1,7 @@
 """Lazy PyArrow-backed adapter for versioned Parquet datasets."""
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC
 from os import PathLike
 from pathlib import Path
@@ -25,17 +26,23 @@ _PARQUET_COLUMNS = (
 )
 
 
+@dataclass(frozen=True, slots=True, init=False)
 class ParquetDataSource:
     """Store validated configuration and perform all Parquet I/O in load."""
+
+    path: Path
+    _instruments: Mapping[InstrumentId, Instrument]
 
     def __init__(
         self,
         path: str | PathLike[str],
         instruments: Mapping[InstrumentId, Instrument],
     ) -> None:
-        self.path = Path(path)
-        self._instruments = MappingProxyType(
-            copy_instrument_mapping(instruments)
+        object.__setattr__(self, "path", Path(path))
+        object.__setattr__(
+            self,
+            "_instruments",
+            MappingProxyType(copy_instrument_mapping(instruments)),
         )
 
     def load(

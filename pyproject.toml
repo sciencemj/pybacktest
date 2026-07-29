@@ -19,7 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 data = ["pandas>=2.2"]
-parquet = ["pyarrow>=17"]
+parquet = ["pandas>=2.2", "pyarrow>=17"]
 yfinance = ["yfinance>=0.2"]
 plot = ["matplotlib>=3.9"]
 

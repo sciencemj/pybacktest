@@ -315,6 +315,20 @@ def test_union_calendar_keeps_dates_seen_by_only_one_instrument():
     assert not calendar.flags.writeable
 
 
+def test_calendar_array_cannot_be_made_writeable_again():
+    calendar = CalendarPolicy.union().build(
+        {
+            AAPL.id: np.array(
+                ["2024-01-02", "2024-01-03"],
+                dtype="datetime64[ns]",
+            )
+        }
+    )
+
+    with pytest.raises(ValueError):
+        calendar.setflags(write=True)
+
+
 def test_intersection_calendar_keeps_only_shared_dates():
     timestamps = {
         AAPL.id: np.array(

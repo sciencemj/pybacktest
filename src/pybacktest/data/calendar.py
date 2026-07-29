@@ -7,7 +7,7 @@ from enum import StrEnum
 import numpy as np
 from numpy.typing import NDArray
 
-from pybacktest.data.validation import normalize_timestamps
+from pybacktest.data.validation import freeze_array, normalize_timestamps
 from pybacktest.domain.errors import ConfigurationError, DataValidationError
 from pybacktest.domain.instruments import InstrumentId
 
@@ -93,5 +93,4 @@ class CalendarPolicy:
             order="C",
             copy=True,
         )
-        result.setflags(write=False)
-        return result
+        return freeze_array(result)

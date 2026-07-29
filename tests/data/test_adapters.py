@@ -196,6 +196,18 @@ def test_pandas_source_rejects_non_datetime_index():
         PandasDataSource(invalid, instruments={AAPL.id: AAPL})
 
 
+def test_pandas_source_rejects_nat_index_before_period_filtering():
+    index = pd.DatetimeIndex(
+        [
+            datetime(2024, 1, 2, tzinfo=UTC),
+            pd.NaT,
+        ]
+    )
+
+    with pytest.raises(DataValidationError, match="NaT"):
+        PandasDataSource(frame(index), instruments={AAPL.id: AAPL})
+
+
 def test_pandas_source_rejects_non_numeric_ohlcv_without_coercion():
     index = pd.date_range("2024-01-02", periods=1, tz="UTC", freq="D")
     invalid = frame(index)
@@ -257,6 +269,17 @@ def test_parquet_constructor_performs_no_path_io(tmp_path: Path):
     source = ParquetDataSource(missing_path, instruments={AAPL.id: AAPL})
 
     assert source.path == missing_path
+
+
+def test_parquet_source_path_is_read_only(tmp_path: Path):
+    source = ParquetDataSource(
+        tmp_path / "original.parquet",
+        instruments={AAPL.id: AAPL},
+    )
+
+    with pytest.raises(AttributeError):
+        source.path = tmp_path / "replacement.parquet"  # type: ignore[misc]
+    assert source.path == tmp_path / "original.parquet"
 
 
 def test_parquet_source_loads_filtered_half_open_period(tmp_path: Path):

@@ -54,7 +54,7 @@ def normalize_timestamps(values: object) -> NDArray[np.datetime64]:
             raise DataValidationError(
                 "timestamps must be strictly increasing."
             )
-    return _freeze_array(normalized)
+    return freeze_array(normalized)
 
 
 def normalize_ohlcv(
@@ -103,11 +103,11 @@ def normalize_ohlcv(
         )
 
     return (
-        _freeze_array(open_values),
-        _freeze_array(high_values),
-        _freeze_array(low_values),
-        _freeze_array(close_values),
-        _freeze_array(volume_values),
+        freeze_array(open_values),
+        freeze_array(high_values),
+        freeze_array(low_values),
+        freeze_array(close_values),
+        freeze_array(volume_values),
     )
 
 
@@ -181,9 +181,10 @@ def _normalize_float_array(
     return normalized
 
 
-def _freeze_array(
+def freeze_array(
     values: NDArray[_Scalar],
 ) -> NDArray[_Scalar]:
+    """Copy an array onto immutable bytes-backed storage."""
     immutable_bytes = values.tobytes(order="C")
     frozen = np.frombuffer(immutable_bytes, dtype=values.dtype).reshape(
         values.shape
