@@ -7,9 +7,10 @@ from types import MappingProxyType
 import numpy as np
 from numpy.typing import NDArray
 
+from pybacktest.data.calendar import CalendarPolicy
 from pybacktest.data.fingerprint import compute_dataset_fingerprint
 from pybacktest.data.validation import normalize_ohlcv, normalize_timestamps
-from pybacktest.domain.errors import DataValidationError
+from pybacktest.domain.errors import ConfigurationError, DataValidationError
 from pybacktest.domain.instruments import Instrument, InstrumentId
 from pybacktest.domain.time import Timeframe
 
@@ -50,6 +51,7 @@ class MarketDataSet:
     series: Mapping[InstrumentId, BarSeries]
     instruments: Mapping[InstrumentId, Instrument]
     timeframe: Timeframe
+    timestamps: NDArray[np.datetime64] = field(init=False)
     fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -90,6 +92,12 @@ class MarketDataSet:
                     "instrument metadata must match its mapping key."
                 )
 
+        timestamps = CalendarPolicy.union().build(
+            {
+                instrument_id: bar_series.timestamps
+                for instrument_id, bar_series in series.items()
+            }
+        )
         fingerprint = compute_dataset_fingerprint(
             series,
             instruments,
@@ -105,4 +113,43 @@ class MarketDataSet:
             "instruments",
             MappingProxyType(instruments),
         )
+        object.__setattr__(self, "timestamps", timestamps)
         object.__setattr__(self, "fingerprint", fingerprint)
+
+    def prefix(self, count: int) -> "MarketDataSet":
+        """Return bars observed within the first ``count`` union timestamps."""
+        if (
+            isinstance(count, bool)
+            or not isinstance(count, int)
+            or count <= 0
+            or count > len(self.timestamps)
+        ):
+            raise ConfigurationError(
+                "dataset prefix count must be within the union clock."
+            )
+        if count == len(self.timestamps):
+            return self
+
+        boundary = self.timestamps[count - 1]
+        sliced: dict[InstrumentId, BarSeries] = {}
+        for instrument_id, series in self.series.items():
+            stop = int(
+                np.searchsorted(series.timestamps, boundary, side="right")
+            )
+            if stop == 0:
+                raise ConfigurationError(
+                    "dataset prefix would leave an instrument empty."
+                )
+            sliced[instrument_id] = BarSeries(
+                timestamps=series.timestamps[:stop],
+                open=series.open[:stop],
+                high=series.high[:stop],
+                low=series.low[:stop],
+                close=series.close[:stop],
+                volume=series.volume[:stop],
+            )
+        return MarketDataSet(
+            series=sliced,
+            instruments=self.instruments,
+            timeframe=self.timeframe,
+        )

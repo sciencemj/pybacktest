@@ -12,6 +12,11 @@ from pybacktest.domain.errors import ConfigurationError, DataValidationError
 from pybacktest.domain.instruments import Instrument, InstrumentId
 from pybacktest.domain.market import BarView, MarketSlice
 from pybacktest.domain.time import Timeframe
+from tests.factories import bar_series as factory_bar_series
+from tests.factories import instrument as factory_instrument
+from tests.factories import market_dataset as factory_market_dataset
+from tests.factories import one_instrument_dataset
+from tests.factories import timestamp as factory_timestamp
 
 AAPL = Instrument(
     id=InstrumentId.parse("XNAS:AAPL"),
@@ -380,3 +385,72 @@ def test_calendar_policy_requires_typed_mode():
 def test_calendar_rejects_empty_instrument_mapping():
     with pytest.raises(DataValidationError, match="at least one"):
         CalendarPolicy.union().build({})
+
+
+def test_dataset_union_timestamps_are_sorted_and_immutable():
+    aapl = factory_instrument("AAPL")
+    msft = factory_instrument("MSFT")
+    market_data = factory_market_dataset(
+        {
+            aapl: factory_bar_series(
+                closes=[10, 12],
+                timestamps=[factory_timestamp(0), factory_timestamp(2)],
+            ),
+            msft: factory_bar_series(
+                closes=[20, 21],
+                timestamps=[factory_timestamp(1), factory_timestamp(2)],
+            ),
+        }
+    )
+
+    np.testing.assert_array_equal(
+        market_data.timestamps,
+        [
+            factory_timestamp(0),
+            factory_timestamp(1),
+            factory_timestamp(2),
+        ],
+    )
+    assert not market_data.timestamps.flags.writeable
+    with pytest.raises(ValueError):
+        market_data.timestamps.setflags(write=True)
+
+
+def test_dataset_prefix_slices_each_instrument_at_union_boundary():
+    aapl = factory_instrument("AAPL")
+    msft = factory_instrument("MSFT")
+    market_data = factory_market_dataset(
+        {
+            aapl: factory_bar_series(
+                closes=[10, 12],
+                timestamps=[factory_timestamp(0), factory_timestamp(2)],
+            ),
+            msft: factory_bar_series(
+                closes=[20, 21],
+                timestamps=[factory_timestamp(1), factory_timestamp(2)],
+            ),
+        }
+    )
+
+    prefix = market_data.prefix(2)
+
+    np.testing.assert_array_equal(
+        prefix.timestamps,
+        [factory_timestamp(0), factory_timestamp(1)],
+    )
+    np.testing.assert_array_equal(
+        prefix.series[aapl.id].timestamps,
+        [factory_timestamp(0)],
+    )
+    np.testing.assert_array_equal(
+        prefix.series[msft.id].timestamps,
+        [factory_timestamp(1)],
+    )
+
+
+@pytest.mark.parametrize("count", [0, -1, True, 4])
+def test_dataset_prefix_rejects_invalid_counts(count: object):
+    market_data, _ = one_instrument_dataset(closes=[1, 2, 3])
+
+    with pytest.raises(ConfigurationError, match="prefix"):
+        market_data.prefix(count)  # type: ignore[arg-type]
