@@ -2,10 +2,11 @@ from dataclasses import FrozenInstanceError, dataclass
 from decimal import Decimal
 from types import MappingProxyType
 
+import numpy as np
 import pytest
 
 from pybacktest.data.features import FeatureBuilder, FeatureExecutor
-from pybacktest.domain.errors import AdapterContractError
+from pybacktest.domain.errors import AdapterContractError, ConfigurationError
 from pybacktest.domain.identifiers import RunId
 from pybacktest.domain.instruments import InstrumentId
 from pybacktest.domain.money import Money, Quantity
@@ -42,7 +43,7 @@ def feature_context() -> StrategyContext:
     builder.source("close", instrument, "close")
     features = FeatureExecutor().execute(builder.plan(), dataset)
     active_orders = [make_order()]
-    portfolio: PortfolioSnapshot = StaticPortfolio(
+    portfolio = StaticPortfolio(
         positions=MappingProxyType({instrument: Quantity.of("2")})
     )
     context = StrategyContext(
@@ -178,4 +179,102 @@ def test_validate_strategy_output_rejects_duplicate_cancel_requests():
                 CancelOrderIntent(active.id, reason),
             ],
             universe={active.instrument},
+        )
+
+
+def test_strategy_context_rejects_feature_view_timestamp_mismatch():
+    dataset, instrument = one_instrument_dataset(closes=[1, 2])
+    builder = FeatureBuilder()
+    builder.source("close", instrument, "close")
+    features = FeatureExecutor().execute(builder.plan(), dataset)
+
+    with pytest.raises(ConfigurationError, match=r"feature.*timestamp"):
+        StrategyContext(
+            timestamp=dataset.timestamps[1],
+            portfolio=StaticPortfolio(
+                positions=MappingProxyType(
+                    {instrument: Quantity.of("1")}
+                )
+            ),
+            active_orders=(),
+            features=features.view(dataset.timestamps[0]),
+            run_id=RunId.parse(f"run_{2:032x}"),
+        )
+
+
+def test_portfolio_snapshot_defensively_copies_positions():
+    item = make_instrument()
+    source_positions = {item.id: Quantity.of("2")}
+
+    snapshot = PortfolioSnapshot(positions=source_positions)
+    source_positions[item.id] = Quantity.of("99")
+
+    assert isinstance(snapshot.positions, MappingProxyType)
+    assert snapshot.positions[item.id] == Quantity.of("2")
+    with pytest.raises(TypeError):
+        snapshot.positions[item.id] = Quantity.of("3")  # type: ignore[index]
+
+
+def test_strategy_context_replaces_structural_portfolio_with_frozen_snapshot():
+    dataset, instrument = one_instrument_dataset(closes=[1, 2])
+    builder = FeatureBuilder()
+    builder.source("close", instrument, "close")
+    features = FeatureExecutor().execute(builder.plan(), dataset)
+    source_positions = {instrument: Quantity.of("2")}
+    source = StaticPortfolio(positions=source_positions)  # type: ignore[arg-type]
+
+    context = StrategyContext(
+        timestamp=dataset.timestamps[1],
+        portfolio=source,
+        active_orders=(),
+        features=features.view(dataset.timestamps[1]),
+        run_id=RunId.parse(f"run_{3:032x}"),
+    )
+    source_positions[instrument] = Quantity.of("99")
+
+    assert type(context.portfolio) is PortfolioSnapshot
+    assert context.portfolio.positions[instrument] == Quantity.of("2")
+
+
+@pytest.mark.parametrize(
+    "positions",
+    [
+        [],
+        {"XNAS:AAPL": Quantity.of("1")},
+        {make_instrument().id: "not a quantity"},
+    ],
+)
+def test_portfolio_snapshot_rejects_invalid_position_mappings(
+    positions: object,
+):
+    with pytest.raises(ConfigurationError, match="positions"):
+        PortfolioSnapshot(positions=positions)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "not_a_scalar",
+    [
+        np.array([np.datetime64("2024-01-03", "ns")]),
+        np.array(np.datetime64("2024-01-03", "ns")),
+    ],
+)
+def test_strategy_context_rejects_datetime_arrays(
+    not_a_scalar: object,
+):
+    dataset, instrument = one_instrument_dataset(closes=[1, 2])
+    builder = FeatureBuilder()
+    builder.source("close", instrument, "close")
+    features = FeatureExecutor().execute(builder.plan(), dataset)
+
+    with pytest.raises(ConfigurationError, match="scalar"):
+        StrategyContext(
+            timestamp=not_a_scalar,  # type: ignore[arg-type]
+            portfolio=StaticPortfolio(
+                positions=MappingProxyType(
+                    {instrument: Quantity.of("1")}
+                )
+            ),
+            active_orders=(),
+            features=features.view(dataset.timestamps[1]),
+            run_id=RunId.parse(f"run_{4:032x}"),
         )

@@ -2,6 +2,7 @@
 
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
 import numpy as np
@@ -37,57 +38,102 @@ _INSTRUMENT_INTENT_TYPES = (
 )
 
 
-@runtime_checkable
-class PortfolioSnapshot(Protocol):
-    """Smallest read-only portfolio shape exposed to strategies."""
-
+class _PortfolioSnapshotSource(Protocol):
     @property
-    def positions(self) -> Mapping[InstrumentId, Quantity]:
-        """Current signed quantities keyed by instrument."""
+    def positions(self) -> object:
+        """Positions projected from an engine-owned portfolio state."""
         raise NotImplementedError
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
+class PortfolioSnapshot:
+    """Explicit immutable portfolio quantities exposed to strategies."""
+
+    positions: Mapping[InstrumentId, Quantity]
+
+    def __init__(self, positions: object) -> None:
+        if not isinstance(positions, Mapping):
+            raise ConfigurationError(
+                "portfolio positions must be a mapping."
+            )
+        copied = dict(positions)
+        if not all(
+            isinstance(instrument, InstrumentId)
+            and isinstance(quantity, Quantity)
+            for instrument, quantity in copied.items()
+        ):
+            raise ConfigurationError(
+                "portfolio positions must map InstrumentId to Quantity."
+            )
+        object.__setattr__(
+            self,
+            "positions",
+            MappingProxyType(copied),
+        )
+
+
+@dataclass(frozen=True, slots=True, init=False)
 class StrategyContext:
     """Immutable state supplied to one strategy decision."""
 
     timestamp: np.datetime64
     portfolio: PortfolioSnapshot
-    active_orders: Sequence[Order]
+    active_orders: tuple[Order, ...]
     features: FeatureView
     run_id: RunId
 
-    def __post_init__(self) -> None:
+    def __init__(
+        self,
+        timestamp: np.datetime64,
+        portfolio: PortfolioSnapshot | _PortfolioSnapshotSource,
+        active_orders: Sequence[Order],
+        features: FeatureView,
+        run_id: RunId,
+    ) -> None:
+        if not isinstance(timestamp, np.datetime64):
+            raise ConfigurationError(
+                "strategy timestamp must be a scalar np.datetime64."
+            )
         try:
-            timestamp = self.timestamp.astype("datetime64[ns]")
+            normalized_timestamp = timestamp.astype("datetime64[ns]")
         except (AttributeError, TypeError, ValueError) as exc:
             raise ConfigurationError(
                 "strategy timestamp must be valid."
             ) from exc
-        if np.isnat(timestamp):
+        if np.isnat(normalized_timestamp):
             raise ConfigurationError("strategy timestamp cannot be NaT.")
-        if not isinstance(self.portfolio, PortfolioSnapshot):
+        try:
+            positions = portfolio.positions
+        except AttributeError as exc:
             raise ConfigurationError(
-                "portfolio must implement PortfolioSnapshot."
-            )
+                "portfolio must expose positions."
+            ) from exc
+        normalized_portfolio = PortfolioSnapshot(positions=positions)
         if (
-            isinstance(self.active_orders, (str, bytes, bytearray))
-            or not isinstance(self.active_orders, Sequence)
+            isinstance(active_orders, (str, bytes, bytearray))
+            or not isinstance(active_orders, Sequence)
         ):
             raise ConfigurationError(
                 "active_orders must be a sequence of Order values."
             )
-        active_orders = tuple(self.active_orders)
-        if not all(isinstance(order, Order) for order in active_orders):
+        normalized_orders = tuple(active_orders)
+        if not all(isinstance(order, Order) for order in normalized_orders):
             raise ConfigurationError(
                 "active_orders must contain only Order values."
             )
-        if not isinstance(self.features, FeatureView):
+        if not isinstance(features, FeatureView):
             raise ConfigurationError("features must be a FeatureView.")
-        if not isinstance(self.run_id, RunId):
+        if features.timestamp != normalized_timestamp:
+            raise ConfigurationError(
+                "feature view timestamp must match strategy timestamp."
+            )
+        if not isinstance(run_id, RunId):
             raise ConfigurationError("run_id must be a RunId.")
-        object.__setattr__(self, "timestamp", timestamp)
-        object.__setattr__(self, "active_orders", active_orders)
+        object.__setattr__(self, "timestamp", normalized_timestamp)
+        object.__setattr__(self, "portfolio", normalized_portfolio)
+        object.__setattr__(self, "active_orders", normalized_orders)
+        object.__setattr__(self, "features", features)
+        object.__setattr__(self, "run_id", run_id)
 
 
 @runtime_checkable

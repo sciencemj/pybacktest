@@ -8,6 +8,8 @@ from pybacktest.data.features import (
     FeatureExecutor,
     FeatureNode,
     FeaturePlan,
+    FeatureSet,
+    FeatureView,
 )
 from pybacktest.domain.errors import ConfigurationError, LookaheadViolation
 from tests.factories import (
@@ -243,3 +245,193 @@ def test_feature_node_rejects_operators_outside_the_closed_graph():
             parameter=None,
             lookback=0,
         )
+
+
+def test_feature_view_is_opaque_and_repr_never_discloses_columns():
+    dataset, instrument = one_instrument_dataset(closes=[1, 2, 3])
+    builder = FeatureBuilder()
+    builder.source("close", instrument, "close")
+    features = FeatureExecutor().execute(builder.plan(), dataset)
+    view = features.view(dataset.timestamps[1])
+
+    with pytest.raises(TypeError, match="FeatureSet"):
+        FeatureView(_columns=features.columns, _index=1)  # type: ignore[call-arg]
+
+    representation = repr(view)
+    assert "array" not in representation
+    assert "mappingproxy" not in representation
+    assert str(dataset.timestamps[1]) in representation
+    assert view.timestamp == dataset.timestamps[1]
+
+
+def test_feature_view_has_no_positional_pattern_surface():
+    dataset, instrument = one_instrument_dataset(closes=[1, 2])
+    builder = FeatureBuilder()
+    builder.source("close", instrument, "close")
+    view = FeatureExecutor().execute(
+        builder.plan(),
+        dataset,
+    ).view(dataset.timestamps[0])
+
+    def match_positionally(candidate: object) -> bool:
+        match candidate:
+            case FeatureView(_, _):
+                return True
+            case _:
+                return False
+
+    with pytest.raises(TypeError):
+        match_positionally(view)
+
+
+def test_sma_stays_finite_for_large_finite_observations():
+    dataset, instrument = one_instrument_dataset(
+        closes=[1e308, 1e308],
+    )
+    builder = FeatureBuilder()
+    close = builder.source("close", instrument, "close")
+    builder.sma("sma2", close, window=2)
+
+    result = FeatureExecutor().execute(builder.plan(), dataset)
+
+    np.testing.assert_allclose(
+        result.column("sma2"),
+        [np.nan, 1e308],
+        equal_nan=True,
+    )
+    assert np.isfinite(result.column("sma2")[1])
+
+
+def test_feature_set_rejects_infinite_published_values():
+    with pytest.raises(ConfigurationError, match="infinite"):
+        FeatureSet(
+            timestamps=np.array([timestamp(0)]),
+            columns={"invalid": np.array([np.inf])},
+        )
+
+
+def test_direct_feature_plan_rejects_wrong_lookback_recurrence():
+    instrument = make_instrument().id
+    source = FeatureNode(
+        name="close",
+        operator="source",
+        inputs=(),
+        instrument=instrument,
+        field="close",
+        parameter=None,
+        lookback=0,
+    )
+
+    with pytest.raises(ConfigurationError, match="source"):
+        FeatureNode(
+            name="bad_source",
+            operator="source",
+            inputs=(),
+            instrument=instrument,
+            field="close",
+            parameter=None,
+            lookback=1,
+        )
+
+    mutations = (
+        FeatureNode(
+            name="bad_lag",
+            operator="lag",
+            inputs=("close",),
+            instrument=None,
+            field=None,
+            parameter=2,
+            lookback=1,
+        ),
+        FeatureNode(
+            name="bad_sma",
+            operator="sma",
+            inputs=("close",),
+            instrument=None,
+            field=None,
+            parameter=3,
+            lookback=3,
+        ),
+        FeatureNode(
+            name="bad_ema",
+            operator="ema",
+            inputs=("close",),
+            instrument=None,
+            field=None,
+            parameter=3,
+            lookback=1,
+        ),
+    )
+    for mutation in mutations:
+        with pytest.raises(ConfigurationError, match="lookback"):
+            FeaturePlan(nodes=(source, mutation))
+
+
+@pytest.mark.parametrize(
+    ("method", "parameter_name"),
+    [
+        ("lag", "periods"),
+        ("sma", "window"),
+        ("ema", "span"),
+    ],
+)
+def test_feature_parameters_have_a_consistent_supported_maximum(
+    method: str,
+    parameter_name: str,
+):
+    _dataset, instrument = one_instrument_dataset(closes=[1, 2])
+    builder = FeatureBuilder()
+    close = builder.source("close", instrument, "close")
+    operation = getattr(builder, method)
+
+    operation("at_limit", close, **{parameter_name: 1_000_000})
+    with pytest.raises(ConfigurationError, match="at most"):
+        operation(
+            "above_limit",
+            close,
+            **{parameter_name: 1_000_001},
+        )
+
+
+@pytest.mark.parametrize("parameter", [True, 1_000_001, 10**1000])
+def test_direct_feature_nodes_reject_unsupported_parameters(
+    parameter: object,
+):
+    with pytest.raises(ConfigurationError, match="parameter"):
+        FeatureNode(
+            name="invalid",
+            operator="ema",
+            inputs=("close",),
+            instrument=None,
+            field=None,
+            parameter=parameter,  # type: ignore[arg-type]
+            lookback=0,
+        )
+
+
+def test_huge_ema_span_raises_configuration_error_not_overflow():
+    _dataset, instrument = one_instrument_dataset(closes=[1, 2])
+    builder = FeatureBuilder()
+    close = builder.source("close", instrument, "close")
+
+    with pytest.raises(ConfigurationError, match="at most"):
+        builder.ema("huge", close, span=10**1000)
+
+
+@pytest.mark.parametrize(
+    "not_a_scalar",
+    [
+        np.array([timestamp(0)]),
+        np.array(timestamp(0)),
+    ],
+)
+def test_feature_set_view_rejects_datetime_arrays(
+    not_a_scalar: object,
+):
+    dataset, instrument = one_instrument_dataset(closes=[1, 2])
+    builder = FeatureBuilder()
+    builder.source("close", instrument, "close")
+    features = FeatureExecutor().execute(builder.plan(), dataset)
+
+    with pytest.raises(ConfigurationError, match="scalar"):
+        features.view(not_a_scalar)  # type: ignore[arg-type]

@@ -15,6 +15,24 @@ from pybacktest.domain.instruments import InstrumentId
 
 FeatureOperator = Literal["source", "lag", "sma", "ema"]
 FeatureField = Literal["open", "high", "low", "close", "volume"]
+MAX_FEATURE_PARAMETER = 1_000_000
+"""Largest supported lag, SMA window, or EMA span."""
+
+_FEATURE_VIEW_TOKEN = object()
+
+
+def _require_feature_parameter(value: object, label: str) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value <= 0
+        or value > MAX_FEATURE_PARAMETER
+    ):
+        raise ConfigurationError(
+            f"{label} parameter must be a positive integer "
+            f"at most {MAX_FEATURE_PARAMETER}."
+        )
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,16 +88,18 @@ class FeatureNode:
                 raise ConfigurationError(
                     "source feature metadata is invalid."
                 )
-        elif (
-            len(inputs) != 1
-            or self.instrument is not None
-            or self.field is not None
-            or isinstance(self.parameter, bool)
-            or not isinstance(self.parameter, int)
-            or self.parameter <= 0
-        ):
-            raise ConfigurationError(
-                "derived feature metadata is invalid."
+        else:
+            if (
+                len(inputs) != 1
+                or self.instrument is not None
+                or self.field is not None
+            ):
+                raise ConfigurationError(
+                    "derived feature metadata is invalid."
+                )
+            _require_feature_parameter(
+                self.parameter,
+                "feature",
             )
         object.__setattr__(self, "inputs", inputs)
 
@@ -97,7 +117,7 @@ class FeaturePlan:
             raise ConfigurationError(
                 "feature plan nodes must be a sequence."
             ) from exc
-        seen: set[str] = set()
+        seen: dict[str, FeatureNode] = {}
         for node in nodes:
             if not isinstance(node, FeatureNode):
                 raise ConfigurationError(
@@ -111,7 +131,25 @@ class FeaturePlan:
                 raise ConfigurationError(
                     "feature plan nodes must be topologically ordered."
                 )
-            seen.add(node.name)
+            if node.operator != "source":
+                input_node = seen[node.inputs[0]]
+                if node.operator == "lag":
+                    expected_lookback = (
+                        input_node.lookback + cast(int, node.parameter)
+                    )
+                elif node.operator == "sma":
+                    expected_lookback = (
+                        input_node.lookback
+                        + cast(int, node.parameter)
+                        - 1
+                    )
+                else:
+                    expected_lookback = input_node.lookback
+                if node.lookback != expected_lookback:
+                    raise ConfigurationError(
+                        "feature lookback recurrence is invalid."
+                    )
+            seen[node.name] = node
         object.__setattr__(self, "nodes", nodes)
 
 
@@ -239,14 +277,7 @@ class FeatureBuilder:
 
     @staticmethod
     def _require_positive_parameter(value: int, label: str) -> None:
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, int)
-            or value <= 0
-        ):
-            raise ConfigurationError(
-                f"{label} must be a strictly positive integer."
-            )
+        _require_feature_parameter(value, label)
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,6 +389,10 @@ class FeatureSet:
                 raise ConfigurationError(
                     "feature columns must match the feature clock."
                 )
+            if np.isinf(array).any():
+                raise ConfigurationError(
+                    "feature columns cannot contain infinite values."
+                )
             copied[name] = freeze_array(array)
         object.__setattr__(self, "timestamps", timestamps)
         object.__setattr__(self, "columns", MappingProxyType(copied))
@@ -373,6 +408,10 @@ class FeatureSet:
 
     def view(self, timestamp: np.datetime64) -> "FeatureView":
         """Pin a feature view to one timestamp on this feature clock."""
+        if not isinstance(timestamp, np.datetime64):
+            raise ConfigurationError(
+                "feature view timestamp must be a scalar np.datetime64."
+            )
         try:
             normalized = timestamp.astype("datetime64[ns]")
         except (AttributeError, TypeError, ValueError) as exc:
@@ -387,15 +426,70 @@ class FeatureSet:
             raise ConfigurationError(
                 "feature view timestamp is outside the feature clock."
             )
-        return FeatureView(_columns=self.columns, _index=index)
+        return FeatureView._create(
+            columns=self.columns,
+            index=index,
+            timestamp=normalized,
+        )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(
+    frozen=True,
+    slots=True,
+    init=False,
+    repr=False,
+    match_args=False,
+)
 class FeatureView:
-    """Read-only feature values pinned to one union-clock position."""
+    """Opaque causal access capability pinned to one union-clock position."""
 
-    _columns: Mapping[str, NDArray[np.float64]]
-    _index: int
+    __columns: Mapping[str, NDArray[np.float64]]
+    __index: int
+    __timestamp: np.datetime64
+
+    def __init__(
+        self,
+        *,
+        _token: object = None,
+        _columns: Mapping[str, NDArray[np.float64]] | None = None,
+        _index: int = -1,
+        _timestamp: np.datetime64 | None = None,
+    ) -> None:
+        if (
+            _token is not _FEATURE_VIEW_TOKEN
+            or _columns is None
+            or _index < 0
+            or _timestamp is None
+        ):
+            raise TypeError(
+                "FeatureView instances are created by FeatureSet.view()."
+            )
+        object.__setattr__(self, "_FeatureView__columns", _columns)
+        object.__setattr__(self, "_FeatureView__index", _index)
+        object.__setattr__(self, "_FeatureView__timestamp", _timestamp)
+
+    @classmethod
+    def _create(
+        cls,
+        *,
+        columns: Mapping[str, NDArray[np.float64]],
+        index: int,
+        timestamp: np.datetime64,
+    ) -> "FeatureView":
+        return cls(
+            _token=_FEATURE_VIEW_TOKEN,
+            _columns=columns,
+            _index=index,
+            _timestamp=timestamp,
+        )
+
+    @property
+    def timestamp(self) -> np.datetime64:
+        """The exact normalized union timestamp pinned by this view."""
+        return self.__timestamp
+
+    def __repr__(self) -> str:
+        return f"FeatureView(timestamp={self.__timestamp!r})"
 
     def at(self, name: str, offset: int = 0) -> float:
         """Read at or before the pinned clock position."""
@@ -408,13 +502,13 @@ class FeatureView:
             raise LookaheadViolation(
                 "positive feature offsets would read future data."
             )
-        resolved = self._index + offset
+        resolved = self.__index + offset
         if resolved < 0:
             raise ConfigurationError(
                 "feature offset precedes the available history."
             )
         try:
-            return float(self._columns[name][resolved])
+            return float(self.__columns[name][resolved])
         except KeyError as exc:
             raise ConfigurationError(
                 f"unknown feature column: {name!r}."
@@ -439,10 +533,16 @@ def _sma(
     if window > len(values):
         return result
     finite = np.isfinite(values)
+    scaled = np.divide(
+        values,
+        window,
+        out=np.zeros(len(values), dtype=np.float64),
+        where=finite,
+    )
     sums = np.concatenate(
         (
             np.zeros(1, dtype=np.float64),
-            np.cumsum(np.where(finite, values, 0.0), dtype=np.float64),
+            np.cumsum(scaled, dtype=np.float64),
         )
     )
     counts = np.concatenate(
@@ -454,7 +554,7 @@ def _sma(
     rolling_sums = sums[window:] - sums[:-window]
     rolling_counts = counts[window:] - counts[:-window]
     valid = rolling_counts == window
-    result[window - 1:][valid] = rolling_sums[valid] / window
+    result[window - 1:][valid] = rolling_sums[valid]
     return result
 
 
