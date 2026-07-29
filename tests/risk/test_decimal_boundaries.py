@@ -41,6 +41,7 @@ from pybacktest.domain.portfolio import PortfolioSnapshot
 from pybacktest.ports.risk import RiskContext
 from pybacktest.risk.policies import LongShortRisk
 from pybacktest.risk.sizing import DefaultOrderSizer
+from pybacktest.risk._decimal import floor_quantity_to_lot
 
 # Darwin reserves roughly 415 GiB of virtual address space for the shared
 # cache before Python imports project code; retain less than 1 GiB headroom.
@@ -258,6 +259,58 @@ try:
                 )
             ),
         }
+    elif case == "lowered_int_string_limit":
+        sys.set_int_max_str_digits(640)
+        notional = Decimal("3" + "0" * 698 + "1")
+        expected = Decimal("1" + "0" * 699)
+        direct = floor_quantity_to_lot(
+            notional,
+            Decimal("3"),
+            Decimal("1"),
+        )
+        item, current = context(
+            cash=notional,
+            price=Decimal("3"),
+            tick=Decimal("1"),
+            lot=Decimal("1"),
+        )
+        sized = DefaultOrderSizer().size(
+            TargetWeight(
+                instrument=item.id,
+                weight=Decimal("1"),
+                reason=DecisionReason.of("lowered_int_string_limit"),
+            ),
+            current,
+        )
+        risk = LongShortRisk(
+            max_leverage=Decimal("1"),
+            max_position_weight=Decimal("1"),
+            allow_short=True,
+        ).evaluate(
+            order(
+                item,
+                side=OrderSide.SELL,
+                quantity=expected,
+            ),
+            current,
+        )
+        payload = {
+            "kind": "int_limit",
+            "direct": str(direct),
+            "sizing": (
+                {
+                    "kind": "rejection",
+                    "code": sized.reason.code,
+                }
+                if isinstance(sized, OrderRejected)
+                else {
+                    "kind": "order",
+                    "side": sized.side.value,
+                    "quantity": str(sized.quantity.value),
+                }
+            ),
+            "risk": risk_payload(risk),
+        }
     else:
         raise AssertionError(f"unknown boundary case: {case}")
 except BaseException as error:
@@ -350,3 +403,21 @@ def test_mixed_max_min_aligned_loose_risk_caps_pass_both_directions():
             f"1E+{MAX_EMAX - 2}"
         )
         assert decision["codes"] == []
+
+
+def test_lowered_integer_string_limit_preserves_direct_and_public_results():
+    payload = _run_boundary_case("lowered_int_string_limit")
+    expected = Decimal("1" + "0" * 699)
+
+    assert payload["kind"] == "int_limit"
+    assert Decimal(str(payload["direct"])) == expected
+    sizing = payload["sizing"]
+    assert isinstance(sizing, dict)
+    assert sizing["kind"] == "order"
+    assert sizing["side"] == "buy"
+    assert Decimal(str(sizing["quantity"])) == expected
+    risk = payload["risk"]
+    assert isinstance(risk, dict)
+    assert risk["status"] == "passed"
+    assert Decimal(str(risk["final_quantity"])) == expected
+    assert risk["codes"] == []

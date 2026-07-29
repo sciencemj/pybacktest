@@ -500,6 +500,75 @@ def test_weight_sizing_rejects_a_nonterminating_floor_beyond_work_bound():
     assert result.reason.code == "invalid_sizing_arithmetic"
 
 
+def test_negative_inexact_target_weight_creates_a_sell_order():
+    base = aapl()
+    fractional = Instrument(
+        id=base.id,
+        quote_currency="USD",
+        tick_size=Decimal("1"),
+        lot_size=Decimal("0.1"),
+        timezone=base.timezone,
+    )
+
+    result = DefaultOrderSizer().size(
+        TargetWeight(
+            instrument=fractional.id,
+            weight=Decimal("-1"),
+            reason=DecisionReason.of("negative_fractional_target"),
+        ),
+        context(
+            portfolio=snapshot(
+                cash="1",
+                price="3",
+                item=fractional,
+            ),
+            price=Money.usd("3"),
+            item=fractional,
+        ),
+    )
+
+    assert isinstance(result, Order)
+    assert result.side is OrderSide.SELL
+    assert result.quantity == Quantity.of("0.3")
+
+
+def test_weight_sizing_cancels_large_common_factors_before_guarding():
+    base = aapl()
+    fractional = Instrument(
+        id=base.id,
+        quote_currency="USD",
+        tick_size=Decimal("1"),
+        lot_size=Decimal("0.1"),
+        timezone=base.timezone,
+    )
+    common = Decimal("1" + "0" * 2999 + "1")
+    three_common = Decimal("3" + "0" * 2999 + "3")
+    with localcontext() as setup:
+        setup.prec = 7000
+        current_snapshot = snapshot(
+            cash=common,
+            price=three_common,
+            item=fractional,
+        )
+
+    result = DefaultOrderSizer().size(
+        TargetWeight(
+            instrument=fractional.id,
+            weight=Decimal("1"),
+            reason=DecisionReason.of("cancel_common_factor"),
+        ),
+        context(
+            portfolio=current_snapshot,
+            price=Money.usd(three_common),
+            item=fractional,
+        ),
+    )
+
+    assert isinstance(result, Order)
+    assert result.side is OrderSide.BUY
+    assert result.quantity == Quantity.of("0.3")
+
+
 def test_zero_target_flattens_without_inventing_one_share():
     item = aapl()
     sizer = DefaultOrderSizer()

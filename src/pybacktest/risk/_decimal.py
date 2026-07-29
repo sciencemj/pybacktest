@@ -19,7 +19,10 @@ from math import gcd
 _ZERO = Decimal("0")
 _MIN_WORKING_PRECISION = 64
 _MAX_WORKING_PRECISION = 4096
+_MAX_CANCELLATION_INPUT_DIGITS = 8192
 _GUARD_DIGITS = 16
+_INTEGER_CHUNK_DIGITS = 9
+_INTEGER_CHUNK_BASE = 10**_INTEGER_CHUNK_DIGITS
 
 
 @contextmanager
@@ -96,9 +99,23 @@ def floor_quantity_to_lot(
         or lot_size <= _ZERO
     ):
         raise InvalidOperation("lot-floor operands are invalid")
+    is_negative = notional.is_signed()
     if notional == _ZERO:
-        return _ZERO
+        return notional
 
+    absolute_notional = notional.copy_abs()
+    notional_digits, notional_exponent = _normalized_components(
+        absolute_notional
+    )
+    price_digits, price_exponent = _normalized_components(price)
+    lot_digits, lot_exponent = _normalized_components(lot_size)
+    if any(
+        len(digits) > _MAX_CANCELLATION_INPUT_DIGITS
+        for digits in (notional_digits, price_digits, lot_digits)
+    ):
+        raise InvalidOperation(
+            "lot-floor input exceeds cancellation resource bound"
+        )
     with decimal_context(
         (notional, price, lot_size)
     ) as arithmetic:
@@ -108,36 +125,20 @@ def floor_quantity_to_lot(
     if division_is_exact and is_aligned(raw_quantity, lot_size):
         return raw_quantity
 
-    absolute_notional = notional.copy_abs()
-    notional_tuple = absolute_notional.as_tuple()
-    price_tuple = price.as_tuple()
-    lot_tuple = lot_size.as_tuple()
-    notional_exponent = notional_tuple.exponent
-    price_exponent = price_tuple.exponent
-    lot_exponent = lot_tuple.exponent
-    if (
-        not isinstance(notional_exponent, int)
-        or not isinstance(price_exponent, int)
-        or not isinstance(lot_exponent, int)
-    ):
-        raise InvalidOperation("lot-floor operands require finite exponents")
-    if (
-        len(notional_tuple.digits)
-        + len(price_tuple.digits)
-        + len(lot_tuple.digits)
-        > _MAX_WORKING_PRECISION
-    ):
-        raise InvalidOperation(
-            "lot-floor coefficients exceed working precision"
-        )
-
-    numerator = _coefficient(notional_tuple.digits)
-    denominator = _coefficient(
-        price_tuple.digits
-    ) * _coefficient(lot_tuple.digits)
-    common = gcd(numerator, denominator)
+    numerator = _coefficient(notional_digits)
+    price_coefficient = _coefficient(price_digits)
+    lot_coefficient = _coefficient(lot_digits)
+    common = gcd(numerator, price_coefficient)
     numerator //= common
-    denominator //= common
+    price_coefficient //= common
+    common = gcd(numerator, lot_coefficient)
+    numerator //= common
+    lot_coefficient //= common
+    _integer_digits(numerator)
+    _integer_digits(price_coefficient)
+    _integer_digits(lot_coefficient)
+    denominator = price_coefficient * lot_coefficient
+    _integer_digits(denominator)
     exponent_delta = (
         notional_exponent - price_exponent - lot_exponent
     )
@@ -148,10 +149,13 @@ def floor_quantity_to_lot(
     )
     whole_lots = Decimal((0, quotient_digits, 0))
     quantity = exact_multiply(whole_lots, lot_size)
+    final_digits, _ = _normalized_components(quantity)
+    if len(final_digits) > _MAX_WORKING_PRECISION:
+        raise InvalidOperation(
+            "lot-floor result exceeds working precision"
+        )
     return (
-        quantity.copy_negate()
-        if notional_tuple.sign
-        else quantity
+        quantity.copy_negate() if is_negative else quantity
     )
 
 
@@ -209,7 +213,9 @@ def _arithmetic_precision(values: Sequence[Decimal]) -> int:
     operand_digits = sum(
         len(value.as_tuple().digits) for value in nonzero
     )
-    carry_digits = len(str(len(nonzero))) + _GUARD_DIGITS
+    carry_digits = (
+        _small_integer_digit_count(len(nonzero)) + _GUARD_DIGITS
+    )
     required = max(
         _MIN_WORKING_PRECISION,
         operand_digits + carry_digits,
@@ -238,6 +244,27 @@ def _trailing_zeros(digits: Sequence[int]) -> int:
             break
         count += 1
     return count
+
+
+def _normalized_components(
+    value: Decimal,
+) -> tuple[tuple[int, ...], int]:
+    """Return context-free coefficient digits and exponent without zeros."""
+    decimal_tuple = value.as_tuple()
+    exponent = decimal_tuple.exponent
+    if not value.is_finite() or not isinstance(exponent, int):
+        raise InvalidOperation(
+            "normalized components require a finite Decimal"
+        )
+    if value.is_zero():
+        return (0,), 0
+    trailing_zeros = _trailing_zeros(decimal_tuple.digits)
+    if trailing_zeros == 0:
+        return decimal_tuple.digits, exponent
+    return (
+        decimal_tuple.digits[:-trailing_zeros],
+        exponent + trailing_zeros,
+    )
 
 
 def _floor_scaled_ratio(
@@ -293,8 +320,66 @@ def _floor_scaled_ratio(
     return _integer_digits(numerator // scaled_denominator)
 
 
-def _integer_digits(value: int) -> tuple[int, ...]:
-    return tuple(int(digit) for digit in str(value))
+def _integer_digits(
+    value: int,
+    *,
+    max_digits: int = _MAX_WORKING_PRECISION,
+) -> tuple[int, ...]:
+    """Convert a bounded integer to digits without Python string conversion."""
+    remaining = abs(value)
+    if remaining == 0:
+        return (0,)
+    maximum_chunks = (
+        max_digits + _INTEGER_CHUNK_DIGITS - 1
+    ) // _INTEGER_CHUNK_DIGITS
+    chunks: list[int] = []
+    while remaining and len(chunks) < maximum_chunks:
+        remaining, chunk = divmod(
+            remaining,
+            _INTEGER_CHUNK_BASE,
+        )
+        chunks.append(chunk)
+    if remaining:
+        raise InvalidOperation(
+            "integer exceeds working precision"
+        )
+
+    highest_digits = _small_integer_digits(chunks.pop())
+    total_digits = (
+        len(highest_digits)
+        + len(chunks) * _INTEGER_CHUNK_DIGITS
+    )
+    if total_digits > max_digits:
+        raise InvalidOperation(
+            "integer exceeds working precision"
+        )
+    digits = list(highest_digits)
+    for chunk in reversed(chunks):
+        chunk_digits = _small_integer_digits(chunk)
+        digits.extend(
+            (0,) * (_INTEGER_CHUNK_DIGITS - len(chunk_digits))
+        )
+        digits.extend(chunk_digits)
+    return tuple(digits)
+
+
+def _small_integer_digits(value: int) -> tuple[int, ...]:
+    if value == 0:
+        return (0,)
+    reversed_digits: list[int] = []
+    while value:
+        value, digit = divmod(value, 10)
+        reversed_digits.append(digit)
+    reversed_digits.reverse()
+    return tuple(reversed_digits)
+
+
+def _small_integer_digit_count(value: int) -> int:
+    count = 1
+    while value >= 10:
+        value //= 10
+        count += 1
+    return count
 
 
 __all__ = [

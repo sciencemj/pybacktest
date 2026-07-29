@@ -1040,3 +1040,44 @@ def test_risk_rejects_a_nonterminating_floor_beyond_work_bound():
 
     assert decision.status is RiskStatus.REJECTED
     assert decision.codes == ("invalid_risk_arithmetic",)
+
+
+def test_risk_cancels_large_common_factors_before_guarding():
+    base = aapl()
+    fractional = Instrument(
+        id=base.id,
+        quote_currency="USD",
+        tick_size=Decimal("1"),
+        lot_size=Decimal("0.1"),
+        timezone=base.timezone,
+    )
+    common = Decimal("1" + "0" * 2999 + "1")
+    three_common = Decimal("3" + "0" * 2999 + "3")
+    with localcontext() as setup:
+        setup.prec = 7000
+        current_snapshot = snapshot(
+            cash=common,
+            price=three_common,
+            item=fractional,
+        )
+
+    decision = LongShortRisk(
+        max_leverage=Decimal("1"),
+        max_position_weight=Decimal("1"),
+        allow_short=True,
+    ).evaluate(
+        proposed_order(
+            side=OrderSide.SELL,
+            quantity=Decimal("0.3"),
+            item=fractional,
+        ),
+        context(
+            portfolio=current_snapshot,
+            price=Money.usd(three_common),
+            item=fractional,
+        ),
+    )
+
+    assert decision.status is RiskStatus.PASSED
+    assert decision.final_quantity == Quantity.of("0.3")
+    assert decision.codes == ()
