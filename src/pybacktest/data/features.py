@@ -19,6 +19,7 @@ MAX_FEATURE_PARAMETER = 1_000_000
 """Largest supported lag, SMA window, or EMA span."""
 
 _FEATURE_VIEW_TOKEN = object()
+_FLOAT64_SUBNORMAL_DENOMINATOR = 1 << 1074
 
 
 def _require_feature_parameter(value: object, label: str) -> int:
@@ -529,20 +530,68 @@ def _sma(
     values: NDArray[np.float64],
     window: int,
 ) -> NDArray[np.float64]:
+    """Return a causal rolling mean without overflow or subnormal loss.
+
+    Normal finite prefixes use NumPy's vectorized O(n) cumulative sum. If a
+    causal prefix cannot accept its next absolute value without overflowing,
+    or its spacing would absorb the smallest observed positive value,
+    execution switches once to an exact integer accumulator measured in units
+    of the smallest float64 subnormal. Rebuilding at most one current window
+    keeps the fallback O(n), and making the switch from prefix values alone
+    preserves prefix invariance.
+    """
     result = np.full(len(values), np.nan, dtype=np.float64)
     if window > len(values):
         return result
     finite = np.isfinite(values)
-    scaled = np.divide(
-        values,
-        window,
-        out=np.zeros(len(values), dtype=np.float64),
-        where=finite,
+    finite_count = int(np.count_nonzero(finite))
+    if finite_count == 0:
+        return result
+    absolute_values = np.abs(values[finite])
+    max_absolute = float(np.max(absolute_values))
+    positive_values = absolute_values[absolute_values > 0]
+    minimum_positive = (
+        float(np.min(positive_values))
+        if len(positive_values)
+        else 0.0
     )
+    if max_absolute <= np.finfo(np.float64).max / finite_count:
+        absolute_bound = max_absolute * finite_count
+        if (
+            minimum_positive == 0.0
+            or minimum_positive >= np.spacing(absolute_bound)
+        ):
+            return _sma_float_prefix(values, finite, window)
+
+    switch_index = _first_unsafe_prefix_index(values, finite)
+    if switch_index == len(values):
+        return _sma_float_prefix(values, finite, window)
+    result[:switch_index] = _sma_float_prefix(
+        values[:switch_index],
+        finite[:switch_index],
+        window,
+    )
+    exact_start = max(0, switch_index - window + 1)
+    exact_tail = _sma_exact(values[exact_start:], window)
+    result[switch_index:] = exact_tail[switch_index - exact_start:]
+    return result
+
+
+def _sma_float_prefix(
+    values: NDArray[np.float64],
+    finite: NDArray[np.bool_],
+    window: int,
+) -> NDArray[np.float64]:
+    result = np.full(len(values), np.nan, dtype=np.float64)
+    if window > len(values):
+        return result
     sums = np.concatenate(
         (
             np.zeros(1, dtype=np.float64),
-            np.cumsum(scaled, dtype=np.float64),
+            np.cumsum(
+                np.where(finite, values, 0.0),
+                dtype=np.float64,
+            ),
         )
     )
     counts = np.concatenate(
@@ -554,8 +603,58 @@ def _sma(
     rolling_sums = sums[window:] - sums[:-window]
     rolling_counts = counts[window:] - counts[:-window]
     valid = rolling_counts == window
-    result[window - 1:][valid] = rolling_sums[valid]
+    result[window - 1:][valid] = rolling_sums[valid] / window
     return result
+
+
+def _first_unsafe_prefix_index(
+    values: NDArray[np.float64],
+    finite: NDArray[np.bool_],
+) -> int:
+    maximum = np.finfo(np.float64).max
+    absolute_prefix = 0.0
+    minimum_positive = maximum
+    for index, value in enumerate(values):
+        if not finite[index]:
+            continue
+        absolute_value = abs(float(value))
+        if absolute_value > maximum - absolute_prefix:
+            return index
+        absolute_prefix += absolute_value
+        if 0.0 < absolute_value < minimum_positive:
+            minimum_positive = absolute_value
+        if minimum_positive < np.spacing(absolute_prefix):
+            return index
+    return len(values)
+
+
+def _sma_exact(
+    values: NDArray[np.float64],
+    window: int,
+) -> NDArray[np.float64]:
+    result = np.full(len(values), np.nan, dtype=np.float64)
+    total_units = 0
+    finite_count = 0
+    denominator = window * _FLOAT64_SUBNORMAL_DENOMINATOR
+    for index, value in enumerate(values):
+        if index >= window:
+            outgoing = values[index - window]
+            if np.isfinite(outgoing):
+                total_units -= _float64_subnormal_units(outgoing)
+                finite_count -= 1
+        if np.isfinite(value):
+            total_units += _float64_subnormal_units(value)
+            finite_count += 1
+        if index >= window - 1 and finite_count == window:
+            result[index] = total_units / denominator
+    return result
+
+
+def _float64_subnormal_units(value: np.float64) -> int:
+    numerator, denominator = float(value).as_integer_ratio()
+    return numerator * (
+        _FLOAT64_SUBNORMAL_DENOMINATOR // denominator
+    )
 
 
 def _ema(

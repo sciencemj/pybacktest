@@ -302,6 +302,63 @@ def test_sma_stays_finite_for_large_finite_observations():
     assert np.isfinite(result.column("sma2")[1])
 
 
+@pytest.mark.parametrize(
+    ("window", "expected"),
+    [
+        (1, [1e308, 1e308, 1e308, 1e308]),
+        (2, [np.nan, 1e308, 1e308, 1e308]),
+    ],
+)
+def test_sma_repeated_large_values_never_overflow_prefix_accumulation(
+    window: int,
+    expected: list[float],
+):
+    dataset, instrument = one_instrument_dataset(
+        closes=[1e308, 1e308, 1e308, 1e308],
+    )
+    builder = FeatureBuilder()
+    close = builder.source("close", instrument, "close")
+    builder.sma("sma", close, window=window)
+
+    result = FeatureExecutor().execute(builder.plan(), dataset)
+
+    np.testing.assert_allclose(
+        result.column("sma"),
+        expected,
+        equal_nan=True,
+    )
+    assert not np.isinf(result.column("sma")).any()
+
+
+def test_sma_preserves_the_smallest_positive_subnormal_average():
+    smallest = np.nextafter(np.float64(0), np.float64(1))
+    dataset, instrument = one_instrument_dataset(
+        closes=[smallest, smallest],
+    )
+    builder = FeatureBuilder()
+    close = builder.source("close", instrument, "close")
+    builder.sma("sma2", close, window=2)
+
+    result = FeatureExecutor().execute(builder.plan(), dataset)
+
+    assert np.isnan(result.column("sma2")[0])
+    assert result.column("sma2")[1] == smallest
+
+
+def test_sma_exact_fallback_recovers_subnormals_after_a_large_prefix():
+    smallest = np.nextafter(np.float64(0), np.float64(1))
+    dataset, instrument = one_instrument_dataset(
+        closes=[1e300, smallest, smallest],
+    )
+    builder = FeatureBuilder()
+    close = builder.source("close", instrument, "close")
+    builder.sma("sma2", close, window=2)
+
+    result = FeatureExecutor().execute(builder.plan(), dataset)
+
+    assert result.column("sma2")[2] == smallest
+
+
 def test_feature_set_rejects_infinite_published_values():
     with pytest.raises(ConfigurationError, match="infinite"):
         FeatureSet(
