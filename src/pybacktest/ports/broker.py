@@ -183,10 +183,10 @@ class SessionBoundaryProvider(Protocol):
 
 @runtime_checkable
 class FillIdSource(Protocol):
-    """Issue deterministic fill identities owned by the current run."""
+    """Resolve deterministic fill identities by committed run sequence."""
 
-    def next_fill_id(self) -> FillId:
-        """Return the next identity in the run-scoped fill sequence."""
+    def fill_id(self, sequence: int) -> FillId:
+        """Return the identity for one nonnegative, zero-based sequence."""
         raise NotImplementedError
 
 

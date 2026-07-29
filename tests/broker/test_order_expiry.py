@@ -17,7 +17,7 @@ from pybacktest.adapters.broker import (
     SimulatedBrokerFactory,
     VolumeParticipationLimit,
 )
-from pybacktest.domain.errors import ConfigurationError
+from pybacktest.domain.errors import ClockRegressionError, ConfigurationError
 from pybacktest.domain.orders import TimeInForce
 from tests.factories import accepted_order, instrument, market_slice, rng
 
@@ -107,6 +107,30 @@ def test_day_order_expires_only_at_an_explicit_session_boundary():
     assert order.id not in sim.active_orders
 
 
+def test_inactive_day_order_does_not_expire_even_when_provider_says_true():
+    order = accepted_order(
+        order_type="limit",
+        limit_price="90",
+        time_in_force=TimeInForce.DAY,
+        submitted_at="2024-01-02T21:00:00Z",
+        active_from="2024-01-04T14:30:00Z",
+    )
+    sim = configured_broker(
+        boundary=FixedSessionBoundary(
+            datetime(2024, 1, 3, 14, tzinfo=UTC),
+        )
+    )
+    sim.submit(order)
+
+    events = sim.process(
+        market_slice("2024-01-03T14:30:00Z"),
+        rng(),
+    )
+
+    assert events == ()
+    assert sim.active_orders[order.id] is order
+
+
 def test_direct_broker_without_session_provider_does_not_infer_day_expiry():
     order = accepted_order(
         order_type="limit",
@@ -163,6 +187,57 @@ def test_cancel_emits_typed_event_and_preserves_prior_order_value():
     assert order.id not in sim.active_orders
     with pytest.raises(FrozenInstanceError):
         event.timestamp = datetime.now(UTC)  # type: ignore[misc]
+
+
+def test_cancel_rejects_a_timestamp_before_order_submission():
+    order = accepted_order()
+    sim = configured_broker()
+    sim.submit(order)
+
+    with pytest.raises(ConfigurationError, match="precede order submission"):
+        sim.cancel(
+            order.id,
+            datetime(2024, 1, 2, 20, tzinfo=UTC),
+        )
+
+    assert sim.active_orders[order.id] is order
+
+
+def test_cancel_rejects_a_timestamp_before_processed_market():
+    order = accepted_order(
+        order_type="limit",
+        limit_price="90",
+    )
+    sim = configured_broker()
+    sim.submit(order)
+    sim.process(
+        market_slice("2024-01-03T14:30:00Z"),
+        rng(),
+    )
+
+    with pytest.raises(ClockRegressionError, match="chronology"):
+        sim.cancel(
+            order.id,
+            datetime(2024, 1, 3, 14, tzinfo=UTC),
+        )
+
+    assert sim.active_orders[order.id] is order
+
+
+def test_future_cancellation_prevents_a_later_market_regression():
+    order = accepted_order()
+    sim = configured_broker()
+    sim.submit(order)
+    sim.cancel(
+        order.id,
+        datetime(2024, 1, 4, 14, 30, tzinfo=UTC),
+    )
+
+    with pytest.raises(ClockRegressionError, match="chronology"):
+        sim.process(
+            market_slice("2024-01-03T14:30:00Z"),
+            rng(),
+        )
 
 
 def test_unknown_and_repeated_cancellations_have_distinct_errors():

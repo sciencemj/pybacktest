@@ -1,10 +1,20 @@
 """Deterministic next-bar broker simulation with atomic state transitions."""
 
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import MAX_EMAX, MIN_EMIN, Context, Decimal, localcontext
+from decimal import (
+    MAX_EMAX,
+    MIN_EMIN,
+    ROUND_DOWN,
+    Context,
+    Decimal,
+    Inexact,
+    localcontext,
+)
 from types import MappingProxyType
+from typing import Any
 
 import numpy as np
 
@@ -42,6 +52,7 @@ from pybacktest.ports.broker import (
 
 _ZERO = Decimal("0")
 _UNIT_LOT = Decimal("1")
+_MAX_EXACT_DIGITS = 4096
 _DAY_EXPIRY_MESSAGE = "explicit session boundary reached"
 _CANCELLATION_MESSAGE = "cancelled by request"
 _UNSUPPORTED_IMMEDIATE_TIF = (
@@ -68,16 +79,21 @@ class _ExpiryPlan:
 _BrokerPlan = _ExecutionPlan | _ExpiryPlan
 
 
-class _SequentialFillIds:
-    """A fresh broker-local deterministic fallback for direct construction."""
+@dataclass(frozen=True, slots=True)
+class _BrokerCommit:
+    events: tuple[BrokerEvent, ...]
+    active_orders: dict[OrderId, Order]
+    known_orders: dict[OrderId, Order]
+    used_fill_ids: frozenset[FillId]
+    next_fill_sequence: int
 
-    def __init__(self) -> None:
-        self._next_value = 0
 
-    def next_fill_id(self) -> FillId:
-        fill_id = FillId.parse(f"fill_{self._next_value:032x}")
-        self._next_value += 1
-        return fill_id
+@dataclass(frozen=True, slots=True)
+class _IndexedFillIds:
+    """Pure deterministic fallback indexed by broker-owned committed ordinal."""
+
+    def fill_id(self, sequence: int) -> FillId:
+        return FillId.parse(f"fill_{sequence:032x}")
 
 
 def _require_model(value: object, protocol: type[object], field: str) -> None:
@@ -155,18 +171,142 @@ def _floor_to_lot(quantity: Decimal, lot_size: Decimal) -> Decimal:
         return whole * lot_size
 
 
-def _subtract_capacity(left: Decimal, right: Decimal) -> Decimal:
-    precision = max(
-        64,
-        len(left.as_tuple().digits) + len(right.as_tuple().digits) + 16,
+def _exact_nonnegative_subtract(
+    left: Decimal,
+    right: Decimal,
+    *,
+    operation: str,
+) -> Decimal:
+    if right == _ZERO:
+        return left
+    if left < right:
+        raise ConfigurationError(f"{operation} cannot become negative.")
+    common_exponent = min(
+        left.as_tuple().exponent,
+        right.as_tuple().exponent,
     )
+    if not isinstance(common_exponent, int):
+        raise ConfigurationError(f"{operation} requires finite Decimals.")
+    required_digits = max(left.adjusted(), right.adjusted()) - common_exponent + 1
+    if required_digits > _MAX_EXACT_DIGITS:
+        raise ConfigurationError(
+            f"{operation} exceeds the {_MAX_EXACT_DIGITS}-digit exact-work bound."
+        )
     context = Context(
-        prec=precision,
+        prec=max(64, required_digits),
         Emin=MIN_EMIN,
         Emax=MAX_EMAX,
     )
-    with localcontext(context):
-        return left - right
+    with localcontext(context) as active:
+        result = active.subtract(left, right)
+        if active.flags[Inexact]:
+            raise ConfigurationError(f"{operation} could not be represented exactly.")
+        return result
+
+
+def _coefficient(digits: tuple[int, ...]) -> int:
+    coefficient = 0
+    for digit in digits:
+        coefficient = coefficient * 10 + digit
+    return coefficient
+
+
+def _digits_mod(digits: tuple[int, ...], divisor: int) -> int:
+    remainder = 0
+    for digit in digits:
+        remainder = (remainder * 10 + digit) % divisor
+    return remainder
+
+
+def _trailing_zeros(digits: tuple[int, ...]) -> int:
+    count = 0
+    for digit in reversed(digits):
+        if digit != 0:
+            break
+        count += 1
+    return count
+
+
+def _is_aligned(value: Decimal, increment: Decimal) -> bool:
+    if not value.is_finite() or not increment.is_finite() or increment <= _ZERO:
+        return False
+    if value == _ZERO:
+        return True
+    value_tuple = value.as_tuple()
+    increment_tuple = increment.as_tuple()
+    value_exponent = value_tuple.exponent
+    increment_exponent = increment_tuple.exponent
+    if not isinstance(value_exponent, int) or not isinstance(
+        increment_exponent,
+        int,
+    ):
+        return False
+    divisor = _coefficient(increment_tuple.digits)
+    if divisor == 1:
+        return value_exponent >= increment_exponent or (
+            increment_exponent - value_exponent <= _trailing_zeros(value_tuple.digits)
+        )
+    exponent_delta = value_exponent - increment_exponent
+    if exponent_delta >= 0:
+        remainder = _digits_mod(value_tuple.digits, divisor)
+        if remainder == 0:
+            return True
+        return remainder * pow(10, exponent_delta, divisor) % divisor == 0
+    required_zeros = -exponent_delta
+    if required_zeros > _trailing_zeros(value_tuple.digits):
+        return False
+    return _digits_mod(value_tuple.digits[:-required_zeros], divisor) == 0
+
+
+def _round_to_tick(
+    amount: Decimal,
+    tick_size: Decimal,
+    side: OrderSide,
+) -> Decimal:
+    if _is_aligned(amount, tick_size):
+        return amount
+    quotient_digits = max(
+        1,
+        amount.adjusted() - tick_size.adjusted() + 1,
+    )
+    precision = (
+        quotient_digits
+        + len(amount.as_tuple().digits)
+        + len(tick_size.as_tuple().digits)
+        + 16
+    )
+    if precision > _MAX_EXACT_DIGITS:
+        raise ConfigurationError(
+            "tick rounding exceeds the 4096-digit exact-work bound."
+        )
+    context = Context(
+        prec=max(64, precision),
+        rounding=ROUND_DOWN,
+        Emin=MIN_EMIN,
+        Emax=MAX_EMAX,
+    )
+    with localcontext(context) as active:
+        whole_ticks = active.divide(amount, tick_size).to_integral_value(
+            rounding=ROUND_DOWN
+        )
+        active.clear_flags()
+        rounded = active.multiply(whole_ticks, tick_size)
+        if side is OrderSide.BUY:
+            rounded = active.add(rounded, tick_size)
+        if active.flags[Inexact]:
+            raise ConfigurationError("tick rounding could not be represented exactly.")
+        return rounded
+
+
+def _clone_model(model: object, field: str, protocol: type[object]) -> Any:
+    try:
+        cloned = deepcopy(model)
+    except Exception as error:
+        raise ConfigurationError(
+            f"{field} model could not be cloned for a fresh broker."
+        ) from error
+    _require_model(cloned, protocol, field)
+    return cloned
 
 
 class SimulatedBroker:
@@ -215,11 +355,13 @@ class SimulatedBroker:
         self._instruments = _copy_instruments(instruments)
         self._catalog_is_required = instruments is not None
         self._session_boundary = session_boundary
-        self._fill_ids = fill_ids or _SequentialFillIds()
+        self._fill_ids = fill_ids or _IndexedFillIds()
         self._active_orders: dict[OrderId, Order] = {}
         self._known_orders: dict[OrderId, Order] = {}
         self._used_fill_ids: set[FillId] = set()
+        self._next_fill_sequence = 0
         self._last_market_timestamp: np.datetime64 | None = None
+        self._last_committed_timestamp: datetime | None = None
 
     @property
     def active_orders(self) -> Mapping[OrderId, Order]:
@@ -258,6 +400,8 @@ class SimulatedBroker:
             raise ConfigurationError(
                 "order quote currency must match instrument metadata."
             )
+        if instrument is not None:
+            self._validate_order_metadata(order, instrument)
         self._known_orders[order.id] = order
         self._active_orders[order.id] = order
         return ()
@@ -276,16 +420,27 @@ class SimulatedBroker:
         order = self._active_orders.get(order_id)
         if order is None:
             raise ConfigurationError(f"order {order_id} is no longer active.")
+        if cancelled_at < order.submitted_at:
+            raise ConfigurationError(
+                "cancellation timestamp cannot precede order submission."
+            )
+        if (
+            self._last_committed_timestamp is not None
+            and cancelled_at < self._last_committed_timestamp
+        ):
+            raise ClockRegressionError(
+                "cancellation timestamp violates broker chronology."
+            )
         cancelled = order.cancel(_CANCELLATION_MESSAGE)
+        event = OrderCancelledEvent(
+            order=cancelled,
+            timestamp=cancelled_at,
+            message=_CANCELLATION_MESSAGE,
+        )
         self._known_orders[order_id] = cancelled
         del self._active_orders[order_id]
-        return (
-            OrderCancelledEvent(
-                order=cancelled,
-                timestamp=cancelled_at,
-                message=_CANCELLATION_MESSAGE,
-            ),
-        )
+        self._last_committed_timestamp = cancelled_at
+        return (event,)
 
     def process(
         self,
@@ -297,6 +452,7 @@ class SimulatedBroker:
             raise ConfigurationError("market must be a MarketSlice.")
         if not isinstance(rng, np.random.Generator):
             raise ConfigurationError("rng must be a numpy.random.Generator.")
+        timestamp = _market_datetime(market.timestamp)
         if (
             self._last_market_timestamp is not None
             and market.timestamp <= self._last_market_timestamp
@@ -304,11 +460,25 @@ class SimulatedBroker:
             raise ClockRegressionError(
                 "MarketSlice timestamps must be strictly increasing."
             )
-        timestamp = _market_datetime(market.timestamp)
-        plans = self._calculate_plans(market, timestamp, rng)
-        events = self._commit_plans(plans)
+        if (
+            self._last_committed_timestamp is not None
+            and timestamp < self._last_committed_timestamp
+        ):
+            raise ClockRegressionError(
+                "MarketSlice timestamp violates broker chronology."
+            )
+        staged_rng = deepcopy(rng)
+        plans = self._calculate_plans(market, timestamp, staged_rng)
+        commit = self._stage_commit(plans)
+
+        rng.bit_generator.state = deepcopy(staged_rng.bit_generator.state)
+        self._active_orders = commit.active_orders
+        self._known_orders = commit.known_orders
+        self._used_fill_ids = set(commit.used_fill_ids)
+        self._next_fill_sequence = commit.next_fill_sequence
         self._last_market_timestamp = market.timestamp
-        return events
+        self._last_committed_timestamp = timestamp
+        return commit.events
 
     def _calculate_plans(
         self,
@@ -319,10 +489,10 @@ class SimulatedBroker:
         plans: list[_BrokerPlan] = []
         remaining_capacity: dict[InstrumentId, Decimal | None] = {}
         for order in self._active_orders.values():
+            if order.active_from > timestamp or order.submitted_at >= timestamp:
+                continue
             if self._day_order_expired(order, timestamp):
                 plans.append(_ExpiryPlan(order=order, timestamp=timestamp))
-                continue
-            if order.active_from > timestamp:
                 continue
             bar = market.bars.get(order.instrument)
             if bar is None or bar.volume <= 0:
@@ -356,7 +526,7 @@ class SimulatedBroker:
                 rng,
             )
             self._validate_price(order, slipped, "slippage price")
-            price = self._clamp_to_limit(order, slipped)
+            price = self._execution_price(order, slipped)
             fee = self._commission.calculate(order, quantity, price)
             self._validate_fee(order, fee)
             plans.append(
@@ -369,19 +539,26 @@ class SimulatedBroker:
                 )
             )
             if capacity is not None:
-                remaining_capacity[order.instrument] = _subtract_capacity(
+                remaining_capacity[order.instrument] = _exact_nonnegative_subtract(
                     capacity,
                     quantity_value,
+                    operation="capacity subtraction",
                 )
         return tuple(plans)
 
-    def _commit_plans(
+    def _stage_commit(
         self,
         plans: Sequence[_BrokerPlan],
-    ) -> tuple[BrokerEvent, ...]:
+    ) -> _BrokerCommit:
         next_active = dict(self._active_orders)
         next_known = dict(self._known_orders)
-        next_fill_ids: set[FillId] = set()
+        execution_count = sum(isinstance(plan, _ExecutionPlan) for plan in plans)
+        candidate_fill_ids = tuple(
+            self._fill_ids.fill_id(self._next_fill_sequence + offset)
+            for offset in range(execution_count)
+        )
+        self._validate_fill_ids(candidate_fill_ids)
+        fill_ids = iter(candidate_fill_ids)
         events: list[BrokerEvent] = []
         for plan in plans:
             if isinstance(plan, _ExpiryPlan):
@@ -397,12 +574,7 @@ class SimulatedBroker:
                 )
                 continue
 
-            fill_id = self._fill_ids.next_fill_id()
-            if not isinstance(fill_id, FillId):
-                raise ConfigurationError("fill_ids must return a FillId.")
-            if fill_id in self._used_fill_ids or fill_id in next_fill_ids:
-                raise ConfigurationError(f"duplicate fill id: {fill_id}.")
-            next_fill_ids.add(fill_id)
+            fill_id = next(fill_ids)
             fill = Fill(
                 id=fill_id,
                 order_id=plan.order.id,
@@ -421,10 +593,13 @@ class SimulatedBroker:
             else:
                 next_active[updated.id] = updated
                 events.append(OrderPartiallyFilledEvent(fill=fill, order=updated))
-        self._active_orders = next_active
-        self._known_orders = next_known
-        self._used_fill_ids.update(next_fill_ids)
-        return tuple(events)
+        return _BrokerCommit(
+            events=tuple(events),
+            active_orders=next_active,
+            known_orders=next_known,
+            used_fill_ids=frozenset({*self._used_fill_ids, *candidate_fill_ids}),
+            next_fill_sequence=(self._next_fill_sequence + execution_count),
+        )
 
     def _day_order_expired(
         self,
@@ -439,6 +614,55 @@ class SimulatedBroker:
                 "session_boundary.day_order_expired() must return bool."
             )
         return result
+
+    def _validate_fill_ids(
+        self,
+        candidate_fill_ids: Sequence[object],
+    ) -> None:
+        seen: set[FillId] = set()
+        for fill_id in candidate_fill_ids:
+            if not isinstance(fill_id, FillId):
+                raise ConfigurationError("fill id source must return a FillId.")
+            if fill_id in self._used_fill_ids or fill_id in seen:
+                raise ConfigurationError(
+                    f"duplicate fill id in staged process: {fill_id}."
+                )
+            seen.add(fill_id)
+
+    def _validate_order_metadata(
+        self,
+        order: Order,
+        instrument: Instrument,
+    ) -> None:
+        alignments = (
+            ("order quantity", order.quantity.value, instrument.lot_size),
+            (
+                "filled quantity",
+                order.filled_quantity.value,
+                instrument.lot_size,
+            ),
+        )
+        for field, value, increment in alignments:
+            if not _is_aligned(value, increment):
+                raise ConfigurationError(
+                    f"{field} must align to the instrument lot size."
+                )
+        remaining = _exact_nonnegative_subtract(
+            order.quantity.value,
+            order.filled_quantity.value,
+            operation="order remaining quantity",
+        )
+        if not _is_aligned(remaining, instrument.lot_size):
+            raise ConfigurationError(
+                "remaining quantity must align to the instrument lot size."
+            )
+        if order.limit_price is not None and not _is_aligned(
+            order.limit_price.amount,
+            instrument.tick_size,
+        ):
+            raise ConfigurationError(
+                "limit price must align to the instrument tick size."
+            )
 
     def _lot_size(self, instrument_id: InstrumentId) -> Decimal:
         instrument = self._instruments.get(instrument_id)
@@ -481,15 +705,25 @@ class SimulatedBroker:
                 "fee must be nonnegative finite Money in the order quote currency."
             )
 
-    @staticmethod
-    def _clamp_to_limit(order: Order, price: Money) -> Money:
+    def _execution_price(self, order: Order, price: Money) -> Money:
+        instrument = self._instruments.get(order.instrument)
+        if instrument is not None:
+            price = Money.of(
+                _round_to_tick(
+                    price.amount,
+                    instrument.tick_size,
+                    order.side,
+                ),
+                price.currency,
+            )
+            self._validate_price(order, price, "tick-rounded price")
         limit = order.limit_price
-        if limit is None:
-            return price
-        if order.side is OrderSide.BUY and price.amount > limit.amount:
-            return limit
-        if order.side is OrderSide.SELL and price.amount < limit.amount:
-            return limit
+        if limit is not None:
+            if order.side is OrderSide.BUY and price.amount > limit.amount:
+                price = limit
+            if order.side is OrderSide.SELL and price.amount < limit.amount:
+                price = limit
+        self._validate_price(order, price, "execution price")
         return price
 
 
@@ -515,11 +749,31 @@ class SimulatedBrokerFactory:
         if not isinstance(run_context, BrokerRunContext):
             raise ConfigurationError("run_context must be a BrokerRunContext.")
         return SimulatedBroker(
-            fill_model=self.fill_model,
-            commission=self.commission,
-            slippage=self.slippage,
-            liquidity=self.liquidity,
-            borrow_cost=self.borrow_cost,
+            fill_model=_clone_model(
+                self.fill_model,
+                "fill_model",
+                FillModel,
+            ),
+            commission=_clone_model(
+                self.commission,
+                "commission",
+                CommissionModel,
+            ),
+            slippage=_clone_model(
+                self.slippage,
+                "slippage",
+                SlippageModel,
+            ),
+            liquidity=_clone_model(
+                self.liquidity,
+                "liquidity",
+                LiquidityModel,
+            ),
+            borrow_cost=_clone_model(
+                self.borrow_cost,
+                "borrow_cost",
+                BorrowCostModel,
+            ),
             instruments=run_context.instruments,
             session_boundary=run_context.session_boundary,
             fill_ids=run_context.fill_ids,

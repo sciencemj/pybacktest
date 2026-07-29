@@ -25,6 +25,7 @@ from pybacktest.domain.errors import (
 )
 from pybacktest.domain.identifiers import OrderId
 from pybacktest.domain.market import BarView, MarketSlice
+from pybacktest.domain.money import Money
 from pybacktest.domain.orders import OrderStatus
 from tests.factories import (
     accepted_order,
@@ -70,6 +71,29 @@ def test_market_order_does_not_fill_before_its_active_bar():
     )
 
     assert events[0].fill.price.amount == Decimal("101")
+
+
+def test_market_order_never_fills_on_its_submission_bar_even_when_active():
+    order = accepted_order(
+        submitted_at="2024-01-03T14:30:00Z",
+        active_from="2024-01-03T14:30:00Z",
+    )
+    sim = broker()
+    sim.submit(order)
+
+    assert (
+        sim.process(
+            market_slice("2024-01-03T14:30:00Z"),
+            rng(),
+        )
+        == ()
+    )
+    event = sim.process(
+        market_slice("2024-01-04T14:30:00Z", open="101"),
+        rng(),
+    )[0]
+
+    assert event.fill.price.amount == Decimal("101")
 
 
 def test_market_order_uses_the_eligible_bar_open_for_a_sell():
@@ -275,6 +299,67 @@ def test_factory_configuration_is_frozen_and_each_broker_is_isolated():
         rng(),
     )[0].fill
     assert first_fill.id == second_fill.id
+
+
+class CountingCommission:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def calculate(self, order, quantity, price) -> Money:
+        self.calls += 1
+        return Money.of(self.calls, price.currency)
+
+
+def test_factory_clones_stateful_models_for_each_broker():
+    item = instrument()
+    factory = SimulatedBrokerFactory(
+        fill_model=NextBarOpenFill(IntrabarPolicy.CONSERVATIVE),
+        commission=CountingCommission(),
+        slippage=NoSlippage(),
+        liquidity=NoLiquidityLimit(),
+        borrow_cost=NoBorrowCost(),
+    )
+    context = BrokerRunContext(instruments={item.id: item})
+    first = factory.create(context)
+    second = factory.create(context)
+    order = accepted_order(item=item)
+    first.submit(order)
+    second.submit(order)
+
+    first_fee = first.process(
+        market_slice("2024-01-03T14:30:00Z", item=item),
+        rng(),
+    )[0].fill.fee
+    second_fee = second.process(
+        market_slice("2024-01-03T14:30:00Z", item=item),
+        rng(),
+    )[0].fill.fee
+
+    assert first_fee == Money.usd("1")
+    assert second_fee == Money.usd("1")
+
+
+class UncloneableCommission:
+    def __deepcopy__(self, memo):
+        del memo
+        raise TypeError("cannot clone")
+
+    def calculate(self, order, quantity, price) -> Money:
+        return Money.of("0", price.currency)
+
+
+def test_factory_rejects_an_uncloneable_model_extension():
+    item = instrument()
+    factory = SimulatedBrokerFactory(
+        fill_model=NextBarOpenFill(IntrabarPolicy.CONSERVATIVE),
+        commission=UncloneableCommission(),
+        slippage=NoSlippage(),
+        liquidity=NoLiquidityLimit(),
+        borrow_cost=NoBorrowCost(),
+    )
+
+    with pytest.raises(ConfigurationError, match=r"commission.*clone"):
+        factory.create(BrokerRunContext(instruments={item.id: item}))
 
 
 def test_broker_run_context_copies_and_freezes_instrument_metadata():
