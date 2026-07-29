@@ -415,6 +415,76 @@ def test_tick_rounding_then_limit_protection_keeps_limit_price(
     assert event.fill.price.amount == Decimal("100.00")
 
 
+class TinyPositiveSlippage:
+    def apply(
+        self,
+        order,
+        quantity,
+        reference_price,
+        market,
+        rng,
+    ) -> Money:
+        del order, quantity, reference_price, market, rng
+        return Money.usd("0.005")
+
+
+def test_sell_limit_protects_a_positive_price_that_tick_floors_to_zero():
+    item = priced_instrument()
+    order = accepted_order(
+        item=item,
+        side=OrderSide.SELL,
+        order_type="limit",
+        limit_price="0.01",
+    )
+    sim = SimulatedBroker(
+        fill_model=NextBarOpenFill(IntrabarPolicy.CONSERVATIVE),
+        commission=NoCommission(),
+        slippage=TinyPositiveSlippage(),
+        liquidity=VolumeParticipationLimit(Decimal("1")),
+        borrow_cost=NoBorrowCost(),
+        instruments={item.id: item},
+    )
+    sim.submit(order)
+
+    fill = sim.process(
+        market_slice("2024-01-03T14:30:00Z", item=item),
+        rng(),
+    )[0].fill
+    ledger = PortfolioLedger(
+        base_currency="USD",
+        initial_cash=Money.usd("10000"),
+        instruments={item.id: item},
+    )
+
+    snapshot = ledger.apply_fill(fill)
+
+    assert fill.price == Money.usd("0.01")
+    assert snapshot.positions[item.id].quantity.value == Decimal("-10")
+
+
+def test_market_sell_still_rejects_a_price_that_tick_floors_to_zero():
+    item = priced_instrument()
+    order = accepted_order(
+        item=item,
+        side=OrderSide.SELL,
+    )
+    sim = SimulatedBroker(
+        fill_model=NextBarOpenFill(IntrabarPolicy.CONSERVATIVE),
+        commission=NoCommission(),
+        slippage=TinyPositiveSlippage(),
+        liquidity=VolumeParticipationLimit(Decimal("1")),
+        borrow_cost=NoBorrowCost(),
+        instruments={item.id: item},
+    )
+    sim.submit(order)
+
+    with pytest.raises(ConfigurationError, match="execution price"):
+        sim.process(
+            market_slice("2024-01-03T14:30:00Z", item=item),
+            rng(),
+        )
+
+
 def test_tick_rounded_broker_fill_is_accepted_by_portfolio_ledger():
     item = priced_instrument()
     order = accepted_order(item=item)

@@ -716,7 +716,6 @@ class SimulatedBroker:
                 ),
                 price.currency,
             )
-            self._validate_price(order, price, "tick-rounded price")
         limit = order.limit_price
         if limit is not None:
             if order.side is OrderSide.BUY and price.amount > limit.amount:
