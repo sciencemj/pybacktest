@@ -299,17 +299,39 @@ class _InheritsBehavior(_InheritedBehaviorBase):
     pass
 
 
+def _entry_for(descriptor, qualname: str) -> dict[str, str] | None:
+    for entry in descriptor:
+        if entry["qualname"] == qualname:
+            return entry
+    return None
+
+
+def _leaf_entry(descriptor) -> dict[str, str]:
+    entry = _entry_for(descriptor, _InheritsBehavior.__qualname__)
+    assert entry is not None, "the leaf class must always be described"
+    return entry
+
+
 def test_inherited_behavior_source_reaches_the_strategy_fingerprint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Changing only an inherited base's source must change the fingerprint.
+    """Only an inherited base's source changes; the fingerprint must follow.
 
-    The concrete class body is untouched, so a digest that hashes only
-    ``type(strategy)`` cannot tell these two runs apart.
+    Every other fingerprint input is held constant and asserted so: identity,
+    configuration, package identity, feature plan, and the leaf class's own
+    source. The counterfactual below pins that a leaf-only digest genuinely
+    would collide, so this test cannot pass for any reason other than the
+    inherited behavioural source reaching the fingerprint.
     """
     plan = FeatureBuilder().plan()
     strategy = _InheritsBehavior()
     baseline = python_strategy_provenance(strategy, plan)
+    baseline_descriptor = provenance_module._implementation_descriptor(
+        _InheritsBehavior
+    )
+    baseline_package = provenance_module._package_identity(_InheritsBehavior)
+    baseline_state = deterministic_instance_state(strategy)
+    baseline_leaf_source = inspect.getsource(_InheritsBehavior)
 
     real_getsource = inspect.getsource
 
@@ -320,8 +342,32 @@ def test_inherited_behavior_source_reaches_the_strategy_fingerprint(
 
     monkeypatch.setattr(provenance_module.inspect, "getsource", patched)
     mutated = python_strategy_provenance(strategy, plan)
+    mutated_descriptor = provenance_module._implementation_descriptor(_InheritsBehavior)
 
+    # Everything except the inherited base source is provably unchanged.
     assert mutated.strategy_identity == baseline.strategy_identity
+    assert provenance_module._package_identity(_InheritsBehavior) == baseline_package
+    assert deterministic_instance_state(strategy) == baseline_state
+    # The patch rewrites the base only; the leaf class source is untouched.
+    assert (
+        provenance_module.inspect.getsource(_InheritsBehavior) == baseline_leaf_source
+    )
+
+    # The counterfactual: a digest built from the leaf class alone is
+    # byte-identical across the change, so leaf-only fingerprinting would
+    # collide here. This is what makes the assertion below meaningful.
+    assert _leaf_entry(mutated_descriptor) == _leaf_entry(baseline_descriptor)
+    assert provenance_module._digest(
+        (_leaf_entry(mutated_descriptor),)
+    ) == provenance_module._digest((_leaf_entry(baseline_descriptor),))
+
+    # Only the inherited base entry moved, and the fingerprint moved with it.
+    base_qualname = _InheritedBehaviorBase.__qualname__
+    baseline_base = _entry_for(baseline_descriptor, base_qualname)
+    mutated_base = _entry_for(mutated_descriptor, base_qualname)
+    assert baseline_base is not None, "base must be in the MRO descriptor"
+    assert mutated_base is not None, "base must be in the MRO descriptor"
+    assert mutated_base != baseline_base
     assert mutated.strategy_fingerprint != baseline.strategy_fingerprint
 
 
