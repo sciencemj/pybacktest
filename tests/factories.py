@@ -7,11 +7,12 @@ from zoneinfo import ZoneInfo
 import numpy as np
 
 from pybacktest.data.dataset import BarSeries, MarketDataSet
-from pybacktest.domain.identifiers import OrderId
+from pybacktest.domain.identifiers import FillId, OrderId
 from pybacktest.domain.instruments import Instrument, InstrumentId
 from pybacktest.domain.money import Money, Quantity
 from pybacktest.domain.orders import (
     DecisionReason,
+    Fill,
     Order,
     OrderSide,
     OrderType,
@@ -40,6 +41,35 @@ def instrument(
         tick_size=Decimal("0.01"),
         lot_size=Decimal("1"),
         timezone=ZoneInfo("America/New_York"),
+    )
+
+
+def aapl() -> Instrument:
+    """Return the canonical deterministic AAPL instrument."""
+    return instrument()
+
+
+def fill(
+    instrument_id: InstrumentId,
+    side: OrderSide,
+    *,
+    quantity: object = "10",
+    price: object = "100",
+    fee: object = "0",
+    offset: int = 0,
+    currency: str = "USD",
+) -> Fill:
+    """Return a deterministic fill at a whole-second offset."""
+    observed_at = BASE_DATETIME + timedelta(seconds=offset)
+    return Fill(
+        id=FillId.parse(f"fill_{offset:032x}"),
+        order_id=OrderId.parse(f"order_{offset:032x}"),
+        instrument=instrument_id,
+        side=side,
+        quantity=Quantity.of(quantity),
+        price=Money.of(price, currency),
+        fee=Money.of(fee, currency),
+        timestamp=observed_at,
     )
 
 
