@@ -1,17 +1,24 @@
 """Long/short portfolio risk decisions with stable constraint ordering."""
 
 from dataclasses import dataclass
-from decimal import ROUND_DOWN, Decimal, DecimalException, localcontext
+from decimal import ROUND_DOWN, Decimal, DecimalException
 
 from pybacktest.domain.errors import ConfigurationError
 from pybacktest.domain.instruments import Instrument, InstrumentId
 from pybacktest.domain.money import Money, Quantity, decimal_from
-from pybacktest.domain.orders import Order, OrderSide, OrderType
+from pybacktest.domain.orders import (
+    Order,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+)
 from pybacktest.ports.risk import (
     RiskContext,
     RiskDecision,
     RiskStatus,
 )
+
+from ._decimal import decimal_context
 
 _ZERO = Decimal("0")
 
@@ -56,13 +63,34 @@ class LongShortRisk:
             raise ConfigurationError("order must be an Order.")
         if not isinstance(context, RiskContext):
             raise ConfigurationError("context must be a RiskContext.")
-        original = order.quantity.value
+        if order.status is not OrderStatus.PENDING:
+            raise ConfigurationError(
+                "risk evaluation requires a PENDING proposed order."
+            )
 
         validation = _validate_inputs(order, context)
         if validation is not None:
             code, message = validation
             return _rejection(order.quantity, (code,), message)
 
+        try:
+            with decimal_context(
+                _risk_arithmetic_values(self, order, context)
+            ):
+                return self._evaluate_validated(order, context)
+        except DecimalException:
+            return _rejection(
+                order.quantity,
+                ("invalid_risk_arithmetic",),
+                "Risk arithmetic could not produce a finite decision.",
+            )
+
+    def _evaluate_validated(
+        self,
+        order: Order,
+        context: RiskContext,
+    ) -> RiskDecision:
+        original = order.quantity.value
         instrument = context.instruments[order.instrument]
         mark = context.prices[order.instrument]
         current = _position_quantity(context, order.instrument)
@@ -137,7 +165,7 @@ class LongShortRisk:
                 instrument.lot_size,
             )
             closing_short = max(-current, _ZERO)
-            cash_allowed = closing_short + cash_quantity
+            cash_allowed = max(closing_short, cash_quantity)
             if cash_allowed < original:
                 candidates.append(("available_cash", cash_allowed))
 
@@ -305,8 +333,7 @@ def _other_gross_exposure(
     ]
     values.extend(price.amount for price in context.prices.values())
     try:
-        with localcontext() as decimal_context:
-            decimal_context.prec = _arithmetic_precision(tuple(values))
+        with decimal_context(tuple(values)):
             return sum(
                 (
                     abs(position.quantity.value)
@@ -339,10 +366,7 @@ def _lot_quantity(
     lot_size: Decimal,
 ) -> Decimal:
     try:
-        with localcontext() as decimal_context:
-            decimal_context.prec = _arithmetic_precision(
-                (notional, price, lot_size)
-            )
+        with decimal_context((notional, price, lot_size)):
             lots = (
                 notional / (price * lot_size)
             ).to_integral_value(rounding=ROUND_DOWN)
@@ -367,27 +391,38 @@ def _rejection(
 
 def _aligned(value: Decimal, increment: Decimal) -> bool:
     try:
-        with localcontext() as decimal_context:
-            decimal_context.prec = _arithmetic_precision((value, increment))
+        with decimal_context((value, increment)):
             return value % increment == _ZERO
     except DecimalException:
         return False
 
 
-def _arithmetic_precision(values: tuple[Decimal, ...]) -> int:
-    nonzero = tuple(value for value in values if value != _ZERO)
-    if not nonzero:
-        return 64
-    highest_place = max(value.adjusted() for value in nonzero)
-    exponents: list[int] = []
-    for value in nonzero:
-        exponent = value.as_tuple().exponent
-        if not isinstance(exponent, int):
-            return 64
-        exponents.append(exponent)
-    lowest_place = min(exponents)
-    digits = sum(len(value.as_tuple().digits) for value in nonzero)
-    return max(64, highest_place - lowest_place + digits + 16)
+def _risk_arithmetic_values(
+    policy: LongShortRisk,
+    order: Order,
+    context: RiskContext,
+) -> tuple[Decimal, ...]:
+    values = [
+        order.quantity.value,
+        context.snapshot.cash.amount,
+        context.snapshot.equity.amount,
+        policy.max_leverage,
+        *(
+            position.quantity.value
+            for position in context.snapshot.positions.values()
+        ),
+        *(price.amount for price in context.prices.values()),
+        *(
+            value
+            for instrument in context.instruments.values()
+            for value in (instrument.tick_size, instrument.lot_size)
+        ),
+    ]
+    if policy.max_position_weight is not None:
+        values.append(policy.max_position_weight)
+    if order.limit_price is not None:
+        values.append(order.limit_price.amount)
+    return tuple(values)
 
 
 __all__ = ["LongShortRisk", "RiskStatus"]

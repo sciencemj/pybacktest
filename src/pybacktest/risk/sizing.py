@@ -1,7 +1,7 @@
 """Deterministic conversion of strategy intents into proposed orders."""
 
 from dataclasses import dataclass
-from decimal import ROUND_DOWN, Decimal, DecimalException, localcontext
+from decimal import ROUND_DOWN, Decimal, DecimalException
 from typing import overload
 
 from pybacktest.domain.errors import ConfigurationError
@@ -21,6 +21,8 @@ from pybacktest.domain.orders import (
     TimeInForce,
 )
 from pybacktest.ports.risk import RiskContext, SizedOrderIntent
+
+from ._decimal import decimal_context
 
 _ZERO = Decimal("0")
 
@@ -110,7 +112,7 @@ class DefaultOrderSizer:
                 intent=intent,
                 context=context,
                 instrument=instrument,
-                signed_quantity=-current,
+                signed_quantity=current.copy_negate(),
                 order_type=OrderType.MARKET,
                 limit_price=None,
                 time_in_force=TimeInForce.DAY,
@@ -136,8 +138,7 @@ class DefaultOrderSizer:
                 instrument.lot_size,
                 current,
             )
-            with localcontext() as decimal_context:
-                decimal_context.prec = _arithmetic_precision(values)
+            with decimal_context(values):
                 desired_lots = (
                     equity
                     * intent.weight
@@ -195,7 +196,22 @@ class DefaultOrderSizer:
                 "invalid_quantity_lot",
                 "Target quantity does not align to the instrument lot size.",
             )
-        signed_quantity = intent.quantity.value - current
+        try:
+            with decimal_context(
+                (
+                    intent.quantity.value,
+                    current,
+                    instrument.lot_size,
+                )
+            ):
+                signed_quantity = intent.quantity.value - current
+        except DecimalException:
+            return _rejected(
+                intent,
+                context,
+                "invalid_sizing_arithmetic",
+                "Target quantity arithmetic could not produce a finite order.",
+            )
         if signed_quantity == _ZERO:
             return _rejected(
                 intent,
@@ -248,7 +264,7 @@ class DefaultOrderSizer:
         signed_quantity = (
             intent.quantity.value
             if intent.side is OrderSide.BUY
-            else -intent.quantity.value
+            else intent.quantity.value.copy_negate()
         )
         return _pending_order(
             intent=intent,
@@ -322,7 +338,7 @@ def _pending_order(
         instrument=instrument.id,
         side=side,
         type=order_type,
-        quantity=Quantity.of(abs(signed_quantity)),
+        quantity=Quantity.of(signed_quantity.copy_abs()),
         quote_currency=instrument.quote_currency,
         limit_price=limit_price,
         time_in_force=time_in_force,
@@ -353,27 +369,10 @@ def _rejected(
 
 def _aligned(value: Decimal, increment: Decimal) -> bool:
     try:
-        with localcontext() as decimal_context:
-            decimal_context.prec = _arithmetic_precision((value, increment))
+        with decimal_context((value, increment)):
             return value % increment == _ZERO
     except DecimalException:
         return False
-
-
-def _arithmetic_precision(values: tuple[Decimal, ...]) -> int:
-    nonzero = tuple(value for value in values if value != _ZERO)
-    if not nonzero:
-        return 64
-    highest_place = max(value.adjusted() for value in nonzero)
-    exponents: list[int] = []
-    for value in nonzero:
-        exponent = value.as_tuple().exponent
-        if not isinstance(exponent, int):
-            return 64
-        exponents.append(exponent)
-    lowest_place = min(exponents)
-    digits = sum(len(value.as_tuple().digits) for value in nonzero)
-    return max(64, highest_place - lowest_place + digits + 16)
 
 
 __all__ = ["DefaultOrderSizer"]

@@ -1,8 +1,8 @@
 """Contract and behavior tests for deterministic intent sizing."""
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from typing import assert_type
 from zoneinfo import ZoneInfo
 
@@ -31,6 +31,7 @@ from pybacktest.risk.sizing import DefaultOrderSizer
 from tests.factories import (
     BASE_DATETIME,
     aapl,
+    instrument,
     portfolio_snapshot,
     risk_context,
 )
@@ -148,6 +149,83 @@ def test_risk_context_rejects_invalid_direct_construction(
         RiskContext(**arguments)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(
+    ("prices", "instruments", "tradable", "message"),
+    [
+        (
+            {aapl().id: Money.usd("0")},
+            {aapl().id: aapl()},
+            frozenset({aapl().id}),
+            "positive",
+        ),
+        (
+            {aapl().id: Money.of("100", "KRW")},
+            {aapl().id: aapl()},
+            frozenset({aapl().id}),
+            "currency",
+        ),
+        (
+            {instrument("MSFT").id: Money.usd("100")},
+            {aapl().id: aapl()},
+            frozenset({aapl().id}),
+            "catalog",
+        ),
+        (
+            {aapl().id: Money.usd("100")},
+            {aapl().id: aapl()},
+            frozenset({instrument("MSFT").id}),
+            "tradable",
+        ),
+    ],
+)
+def test_risk_context_rejects_inconsistent_current_data_relationships(
+    prices: dict,
+    instruments: dict,
+    tradable: frozenset,
+    message: str,
+):
+    with pytest.raises(ConfigurationError, match=message):
+        RiskContext(
+            snapshot=snapshot(),
+            prices=prices,
+            instruments=instruments,
+            tradable=tradable,
+            order_id=OrderId.parse("order_" + "6" * 32),
+            submitted_at=BASE_DATETIME,
+            active_from=BASE_DATETIME + timedelta(days=1),
+        )
+
+
+def test_risk_context_rejects_future_snapshot_but_allows_initial_none_timestamp():
+    future_snapshot = replace(
+        snapshot(),
+        timestamp=BASE_DATETIME + timedelta(days=1),
+    )
+    initial_snapshot = replace(snapshot(), timestamp=None)
+
+    with pytest.raises(ConfigurationError, match=r"snapshot.*submitted_at"):
+        RiskContext(
+            snapshot=future_snapshot,
+            prices={aapl().id: Money.usd("100")},
+            instruments={aapl().id: aapl()},
+            tradable=frozenset({aapl().id}),
+            order_id=OrderId.parse("order_" + "5" * 32),
+            submitted_at=BASE_DATETIME,
+            active_from=BASE_DATETIME,
+        )
+
+    value = RiskContext(
+        snapshot=initial_snapshot,
+        prices={aapl().id: Money.usd("100")},
+        instruments={aapl().id: aapl()},
+        tradable=frozenset({aapl().id}),
+        order_id=OrderId.parse("order_" + "4" * 32),
+        submitted_at=BASE_DATETIME,
+        active_from=BASE_DATETIME,
+    )
+    assert value.snapshot.timestamp is None
+
+
 def test_default_sizer_is_immutable_and_satisfies_runtime_contract():
     sizer = DefaultOrderSizer()
 
@@ -229,6 +307,136 @@ def test_target_quantity_is_an_absolute_positive_long_target():
     assert isinstance(cross_short, Order)
     assert cross_short.side is OrderSide.BUY
     assert cross_short.quantity == Quantity.of("9")
+
+
+def test_target_quantity_preserves_exact_tiny_lots_under_low_ambient_precision():
+    base = aapl()
+    fine = Instrument(
+        id=base.id,
+        quote_currency="USD",
+        tick_size=Decimal("1E-20"),
+        lot_size=Decimal("1E-20"),
+        timezone=base.timezone,
+    )
+    target = Decimal("123456789.01234567890123456789")
+    intent = TargetQuantity(
+        fine.id,
+        Quantity.of(target),
+        DecisionReason.of("exact_target"),
+    )
+    current_context = context(
+        portfolio=snapshot(cash="1000000000", price="1", item=fine),
+        price=Money.usd("1"),
+        item=fine,
+    )
+
+    with localcontext() as ambient:
+        ambient.prec = 12
+        result = DefaultOrderSizer().size(intent, current_context)
+
+    assert isinstance(result, Order)
+    assert result.quantity.value == target
+
+
+def test_target_quantity_cancellation_keeps_one_exact_tiny_lot():
+    base = aapl()
+    fine = Instrument(
+        id=base.id,
+        quote_currency="USD",
+        tick_size=Decimal("1E-20"),
+        lot_size=Decimal("1E-20"),
+        timezone=base.timezone,
+    )
+    current_quantity = Decimal("123456789.01234567890123456788")
+    target_quantity = Decimal("123456789.01234567890123456789")
+    with localcontext() as setup:
+        setup.prec = 100
+        current_snapshot = snapshot(
+            cash="1000000000",
+            position=current_quantity,
+            price="1",
+            item=fine,
+        )
+    current_context = context(
+        portfolio=current_snapshot,
+        price=Money.usd("1"),
+        item=fine,
+    )
+
+    with localcontext() as ambient:
+        ambient.prec = 12
+        result = DefaultOrderSizer().size(
+            TargetQuantity(
+                fine.id,
+                Quantity.of(target_quantity),
+                DecisionReason.of("one_lot_delta"),
+            ),
+            current_context,
+        )
+
+    assert isinstance(result, Order)
+    assert result.side is OrderSide.BUY
+    assert result.quantity == Quantity.of("1E-20")
+
+
+def test_non_power_of_ten_weight_sizing_is_ambient_context_independent():
+    base = aapl()
+    odd_lot = Instrument(
+        id=base.id,
+        quote_currency="USD",
+        tick_size=Decimal("0.01"),
+        lot_size=Decimal("0.03"),
+        timezone=base.timezone,
+    )
+    current_context = context(
+        portfolio=snapshot(cash="100", price="7", item=odd_lot),
+        price=Money.usd("7"),
+        item=odd_lot,
+    )
+    intent = TargetWeight(
+        odd_lot.id,
+        Decimal("0.5"),
+        DecisionReason.of("odd_lot"),
+    )
+
+    with localcontext() as low:
+        low.prec = 7
+        low_result = DefaultOrderSizer().size(intent, current_context)
+    with localcontext() as high:
+        high.prec = 80
+        high_result = DefaultOrderSizer().size(intent, current_context)
+
+    assert isinstance(low_result, Order)
+    assert isinstance(high_result, Order)
+    assert low_result.quantity == high_result.quantity == Quantity.of("7.14")
+
+
+def test_weight_sizing_widens_exponent_bounds_for_finite_result():
+    base = aapl()
+    huge = Instrument(
+        id=base.id,
+        quote_currency="USD",
+        tick_size=Decimal("1"),
+        lot_size=Decimal("1"),
+        timezone=base.timezone,
+    )
+    current_context = context(
+        portfolio=snapshot(cash="1E+999998", price="1", item=huge),
+        price=Money.usd("1"),
+        item=huge,
+    )
+
+    result = DefaultOrderSizer().size(
+        TargetWeight(
+            huge.id,
+            Decimal("100"),
+            DecisionReason.of("large_exponent"),
+        ),
+        current_context,
+    )
+
+    assert isinstance(result, Order)
+    assert result.quantity == Quantity.of("1E+1000000")
 
 
 def test_zero_target_flattens_without_inventing_one_share():
@@ -396,18 +604,7 @@ def test_absolute_target_that_already_matches_is_a_typed_noop():
     assert result.reason.code == "no_op_target"
 
 
-@pytest.mark.parametrize(
-    ("mark", "code"),
-    [
-        (Money.usd("0"), "invalid_price"),
-        (Money.of("100", "KRW"), "price_currency_mismatch"),
-        (Money.usd("100.005"), "invalid_price_tick"),
-    ],
-)
-def test_invalid_current_marks_are_typed_rejections(
-    mark: Money,
-    code: str,
-):
+def test_tick_misaligned_current_mark_is_a_typed_rejection():
     item = aapl()
 
     result = DefaultOrderSizer().size(
@@ -416,21 +613,22 @@ def test_invalid_current_marks_are_typed_rejections(
             Decimal("0.1"),
             DecisionReason.of("invalid_mark"),
         ),
-        context(price=mark),
+        context(price=Money.usd("100.005")),
     )
 
     assert isinstance(result, OrderRejected)
-    assert result.reason.code == code
+    assert result.reason.code == "invalid_price_tick"
 
 
 def test_unknown_instrument_is_a_typed_sizing_rejection():
     item = aapl()
     base = context()
+    other = instrument("MSFT")
     unknown_context = RiskContext(
         snapshot=base.snapshot,
-        prices=base.prices,
-        instruments={},
-        tradable=base.tradable,
+        prices={other.id: Money.usd("200")},
+        instruments={other.id: other},
+        tradable=frozenset({other.id}),
         order_id=base.order_id,
         submitted_at=base.submitted_at,
         active_from=base.active_from,

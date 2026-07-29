@@ -78,6 +78,20 @@ class RiskContext:
             raise ConfigurationError(
                 "instruments must map matching InstrumentId to Instrument."
             )
+        for instrument_id, price in copied_prices.items():
+            instrument = copied_instruments.get(instrument_id)
+            if instrument is None:
+                raise ConfigurationError(
+                    "price instrument must exist in the instrument catalog."
+                )
+            if price.amount <= Decimal("0"):
+                raise ConfigurationError(
+                    "prices must contain positive Money values."
+                )
+            if price.currency != instrument.quote_currency:
+                raise ConfigurationError(
+                    "price currency must match the instrument quote currency."
+                )
         if (
             isinstance(self.tradable, (str, bytes, bytearray))
             or not isinstance(self.tradable, Collection)
@@ -93,6 +107,10 @@ class RiskContext:
             raise ConfigurationError(
                 "tradable must contain InstrumentId values."
             )
+        if not copied_tradable.issubset(copied_instruments):
+            raise ConfigurationError(
+                "tradable instruments must exist in the instrument catalog."
+            )
         if not isinstance(self.order_id, OrderId):
             raise ConfigurationError("order_id must be an OrderId.")
         submitted_at = _aware_datetime(self.submitted_at, "submitted_at")
@@ -100,6 +118,13 @@ class RiskContext:
         if active_from < submitted_at:
             raise ConfigurationError(
                 "active_from cannot precede submitted_at."
+            )
+        if (
+            self.snapshot.timestamp is not None
+            and self.snapshot.timestamp > submitted_at
+        ):
+            raise ConfigurationError(
+                "snapshot timestamp cannot follow submitted_at."
             )
         object.__setattr__(
             self,

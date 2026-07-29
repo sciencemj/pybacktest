@@ -1,19 +1,21 @@
 """Contract and core example tests for long/short risk decisions."""
 
 from dataclasses import FrozenInstanceError
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from pybacktest.domain.errors import ConfigurationError
-from pybacktest.domain.identifiers import OrderId
+from pybacktest.domain.identifiers import FillId, OrderId
 from pybacktest.domain.instruments import Instrument
 from pybacktest.domain.money import Money, Quantity
 from pybacktest.domain.orders import (
     DecisionReason,
+    Fill,
     Order,
     OrderSide,
+    OrderStatus,
     OrderType,
     TargetWeight,
     TimeInForce,
@@ -332,11 +334,12 @@ def test_unknown_nontradable_and_missing_price_have_stable_first_codes():
     item = aapl()
     order = proposed_order(side=OrderSide.BUY, quantity="1")
     base = context()
+    other = instrument("MSFT")
     unknown = type(base)(
         snapshot=base.snapshot,
-        prices=base.prices,
-        instruments={},
-        tradable=base.tradable,
+        prices={other.id: Money.usd("200")},
+        instruments={other.id: other},
+        tradable=frozenset({other.id}),
         order_id=base.order_id,
         submitted_at=base.submitted_at,
         active_from=base.active_from,
@@ -403,29 +406,18 @@ def test_available_cash_adjustment_uses_limit_price_and_never_returns_zero_order
     assert decision.codes == ("available_cash",)
 
 
-@pytest.mark.parametrize(
-    ("mark", "code"),
-    [
-        (Money.usd("0"), "invalid_price"),
-        (Money.of("100", "KRW"), "price_currency_mismatch"),
-        (Money.usd("100.005"), "invalid_price_tick"),
-    ],
-)
-def test_risk_rejects_invalid_current_mark_with_stable_code(
-    mark: Money,
-    code: str,
-):
+def test_risk_rejects_tick_misaligned_current_mark_with_stable_code():
     decision = LongShortRisk(
         max_leverage=Decimal("1"),
         max_position_weight=None,
         allow_short=True,
     ).evaluate(
         proposed_order(side=OrderSide.BUY, quantity="1"),
-        context(price=mark),
+        context(price=Money.usd("100.005")),
     )
 
     assert decision.status is RiskStatus.REJECTED
-    assert decision.codes == (code,)
+    assert decision.codes == ("invalid_price_tick",)
 
 
 def test_risk_rejects_invalid_order_lot_and_limit_tick_or_currency():
@@ -790,3 +782,192 @@ def test_risk_caps_preserve_large_and_small_finite_decimal_precision(
     assert decision.status is RiskStatus.ADJUSTED
     assert decision.final_quantity == Quantity.of(expected)
     assert decision.codes == ("max_position_weight",)
+
+
+def test_position_cap_never_depends_on_ambient_precision_or_exceeds_exact_cap():
+    base = aapl()
+    fine = Instrument(
+        id=base.id,
+        quote_currency="USD",
+        tick_size=Decimal("1E-20"),
+        lot_size=Decimal("1E-20"),
+        timezone=base.timezone,
+    )
+    current_context = context(
+        portfolio=snapshot(
+            cash="10000000000",
+            price="1",
+            item=fine,
+        ),
+        price=Money.usd("1"),
+        item=fine,
+    )
+    order = proposed_order(
+        side=OrderSide.BUY,
+        quantity="2000000000",
+        item=fine,
+    )
+    policy = LongShortRisk(
+        max_leverage=Decimal("10"),
+        max_position_weight=Decimal(
+            "0.12345678901234567890123456789"
+        ),
+        allow_short=True,
+    )
+
+    with localcontext() as low:
+        low.prec = 12
+        low_decision = policy.evaluate(order, current_context)
+    with localcontext() as high:
+        high.prec = 80
+        high_decision = policy.evaluate(order, current_context)
+
+    exact_cap = Quantity.of("1234567890.12345678901234567890")
+    assert low_decision.final_quantity == exact_cap
+    assert high_decision.final_quantity == exact_cap
+    assert low_decision == high_decision
+
+
+def test_risk_widens_exponent_bounds_for_finite_position_cap():
+    base = aapl()
+    huge = Instrument(
+        id=base.id,
+        quote_currency="USD",
+        tick_size=Decimal("1"),
+        lot_size=Decimal("1"),
+        timezone=base.timezone,
+    )
+    current_context = context(
+        portfolio=snapshot(cash="1E+999998", price="1", item=huge),
+        price=Money.usd("1"),
+        item=huge,
+    )
+
+    decision = LongShortRisk(
+        max_leverage=Decimal("1000"),
+        max_position_weight=Decimal("100"),
+        allow_short=True,
+    ).evaluate(
+        proposed_order(
+            side=OrderSide.SELL,
+            quantity="1E+1000001",
+            item=huge,
+        ),
+        current_context,
+    )
+
+    assert decision.status is RiskStatus.ADJUSTED
+    assert decision.final_quantity == Quantity.of("1E+1000000")
+    assert decision.codes == ("max_position_weight",)
+
+
+@pytest.mark.parametrize("requested", ["5", "10"])
+def test_positive_cash_never_blocks_partial_or_full_short_cover(
+    requested: str,
+):
+    current_context = context(
+        portfolio=snapshot(cash="50", position="-10"),
+    )
+
+    decision = LongShortRisk(
+        max_leverage=Decimal("100"),
+        max_position_weight=None,
+        allow_short=True,
+    ).evaluate(
+        proposed_order(side=OrderSide.BUY, quantity=requested),
+        current_context,
+    )
+
+    assert decision.status is RiskStatus.PASSED
+    assert decision.final_quantity == Quantity.of(requested)
+
+
+def test_market_short_to_long_crossing_does_not_count_short_cash_twice():
+    current_context = context(
+        portfolio=snapshot(cash="1500", position="-10"),
+    )
+
+    decision = LongShortRisk(
+        max_leverage=Decimal("100"),
+        max_position_weight=None,
+        allow_short=True,
+    ).evaluate(
+        proposed_order(side=OrderSide.BUY, quantity="20"),
+        current_context,
+    )
+
+    assert decision.status is RiskStatus.ADJUSTED
+    assert decision.final_quantity == Quantity.of("15")
+    assert decision.codes == ("available_cash",)
+
+
+def test_limit_short_to_long_crossing_uses_larger_of_cover_and_cash_capacity():
+    current_context = context(
+        portfolio=snapshot(cash="1500", position="-10"),
+    )
+
+    decision = LongShortRisk(
+        max_leverage=Decimal("100"),
+        max_position_weight=None,
+        allow_short=True,
+    ).evaluate(
+        proposed_order(
+            side=OrderSide.BUY,
+            quantity="20",
+            order_type=OrderType.LIMIT,
+            limit_price=Money.usd("200"),
+        ),
+        current_context,
+    )
+
+    assert decision.status is RiskStatus.ADJUSTED
+    assert decision.final_quantity == Quantity.of("10")
+    assert decision.codes == ("available_cash",)
+
+
+def _order_in_status(status: OrderStatus) -> Order:
+    pending = proposed_order(side=OrderSide.BUY, quantity="10")
+    if status is OrderStatus.ACCEPTED:
+        return pending.accept()
+    if status in {OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED}:
+        accepted = pending.accept()
+        fill_quantity = "4" if status is OrderStatus.PARTIALLY_FILLED else "10"
+        return accepted.apply_fill(
+            Fill(
+                id=FillId.parse("fill_" + "f" * 32),
+                order_id=accepted.id,
+                instrument=accepted.instrument,
+                side=accepted.side,
+                quantity=Quantity.of(fill_quantity),
+                price=Money.usd("100"),
+                fee=Money.usd("0"),
+                timestamp=BASE_DATETIME,
+            )
+        )
+    if status is OrderStatus.CANCELLED:
+        return pending.cancel("cancelled before risk re-evaluation")
+    if status is OrderStatus.REJECTED:
+        return pending.reject()
+    raise AssertionError(f"unsupported test status {status}")
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        OrderStatus.ACCEPTED,
+        OrderStatus.PARTIALLY_FILLED,
+        OrderStatus.FILLED,
+        OrderStatus.CANCELLED,
+        OrderStatus.REJECTED,
+    ],
+)
+def test_risk_evaluates_only_pending_proposed_orders(status: OrderStatus):
+    order = _order_in_status(status)
+    assert order.status is status
+
+    with pytest.raises(ConfigurationError, match="PENDING"):
+        LongShortRisk(
+            max_leverage=Decimal("1"),
+            max_position_weight=None,
+            allow_short=True,
+        ).evaluate(order, context())
