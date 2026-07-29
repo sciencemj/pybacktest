@@ -8,6 +8,10 @@ class PybacktestError(Exception):
 class ConfigurationError(PybacktestError, ValueError):
     """Raised when typed configuration violates a declared invariant."""
 
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+
 
 class DataValidationError(PybacktestError, ValueError):
     """Raised when market data violates the source contract."""
