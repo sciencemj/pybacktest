@@ -12,7 +12,7 @@ from typing import NoReturn, TypeAlias
 from .errors import ConfigurationError
 from .identifiers import FillId, OrderId
 from .instruments import InstrumentId
-from .money import Money, Quantity, decimal_from
+from .money import Money, Quantity, decimal_from, normalize_currency
 
 JSONScalar: TypeAlias = str | int | float | bool | None
 
@@ -228,6 +228,7 @@ class Order:
     side: OrderSide
     type: OrderType
     quantity: Quantity
+    quote_currency: str
     limit_price: Money | None
     time_in_force: TimeInForce
     submitted_at: datetime
@@ -242,6 +243,9 @@ class Order:
         _require_instance(self.side, OrderSide, "side")
         _require_instance(self.type, OrderType, "type")
         _require_positive_quantity(self.quantity, "quantity")
+        object.__setattr__(
+            self, "quote_currency", normalize_currency(self.quote_currency)
+        )
         _require_instance(self.time_in_force, TimeInForce, "time_in_force")
         submitted_at = _require_aware_datetime(self.submitted_at, "submitted_at")
         active_from = _require_aware_datetime(self.active_from, "active_from")
@@ -260,6 +264,10 @@ class Order:
                 raise ConfigurationError("limit_price must be a Money.")
             if self.limit_price.amount <= Decimal("0"):
                 raise ConfigurationError("limit_price must be positive.")
+            if self.limit_price.currency != self.quote_currency:
+                raise ConfigurationError(
+                    "limit_price currency must match quote_currency."
+                )
         elif self.limit_price is not None:
             raise ConfigurationError("Market orders cannot have a limit_price.")
         self._validate_status_quantity()
@@ -273,6 +281,7 @@ class Order:
         side: OrderSide,
         type: OrderType,
         quantity: Quantity,
+        quote_currency: str,
         limit_price: Money | None,
         time_in_force: TimeInForce,
         submitted_at: datetime,
@@ -285,6 +294,7 @@ class Order:
             side=side,
             type=type,
             quantity=quantity,
+            quote_currency=quote_currency,
             limit_price=limit_price,
             time_in_force=time_in_force,
             submitted_at=submitted_at,
@@ -318,11 +328,24 @@ class Order:
             raise ConfigurationError("Fill identity does not match the order.")
         if fill.side is not self.side:
             raise ConfigurationError("Fill side does not match the order.")
-        if self.limit_price is not None and (
-            fill.price.currency != self.limit_price.currency
-            or fill.fee.currency != self.limit_price.currency
+        if (
+            fill.price.currency != self.quote_currency
+            or fill.fee.currency != self.quote_currency
         ):
             raise ConfigurationError("Fill currency does not match the order.")
+        if fill.timestamp < self.active_from:
+            raise ConfigurationError("Fill timestamp cannot precede active_from.")
+        if self.limit_price is not None:
+            if (
+                self.side is OrderSide.BUY
+                and fill.price.amount > self.limit_price.amount
+            ):
+                raise ConfigurationError("Fill price exceeds the buy limit.")
+            if (
+                self.side is OrderSide.SELL
+                and fill.price.amount < self.limit_price.amount
+            ):
+                raise ConfigurationError("Fill price falls below the sell limit.")
 
         next_filled = self.filled_quantity.value + fill.quantity.value
         if next_filled > self.quantity.value:

@@ -1,8 +1,9 @@
 """Structured domain events for order execution and decision tracing."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
+from enum import StrEnum
 
 from .errors import ConfigurationError
 from .identifiers import FillId, OrderId
@@ -11,14 +12,21 @@ from .money import Quantity
 from .orders import DecisionReason, OrderSide
 
 
+class EventCode(StrEnum):
+    """Stable machine-readable codes for structured domain events."""
+
+    ORDER_ACCEPTED = "order.accepted"
+    ORDER_ADJUSTED = "order.adjusted"
+    ORDER_REJECTED = "order.rejected"
+    ORDER_EXPIRED = "order.expired"
+    ORDER_PARTIAL_FILL = "order.partial_fill"
+    DATA_UNAVAILABLE = "data.unavailable"
+    DECISION_TRACE = "decision.trace"
+
+
 def _require_instance(value: object, expected_type: type[object], field: str) -> None:
     if not isinstance(value, expected_type):
         raise ConfigurationError(f"{field} must be a {expected_type.__name__}.")
-
-
-def _require_code(code: object) -> None:
-    if not isinstance(code, str) or not code.strip():
-        raise ConfigurationError("code must be a non-empty string.")
 
 
 def _require_timestamp(timestamp: object) -> None:
@@ -46,14 +54,13 @@ class OrderAccepted:
 
     order_id: OrderId
     instrument: InstrumentId
-    code: str
     timestamp: datetime
+    code: EventCode = field(init=False, default=EventCode.ORDER_ACCEPTED)
     message: str | None = None
 
     def __post_init__(self) -> None:
         _require_instance(self.order_id, OrderId, "order_id")
         _require_instance(self.instrument, InstrumentId, "instrument")
-        _require_code(self.code)
         _require_timestamp(self.timestamp)
         _require_message(self.message)
 
@@ -66,8 +73,8 @@ class OrderAdjusted:
     instrument: InstrumentId
     requested_quantity: Quantity
     adjusted_quantity: Quantity
-    code: str
     timestamp: datetime
+    code: EventCode = field(init=False, default=EventCode.ORDER_ADJUSTED)
     message: str | None = None
 
     def __post_init__(self) -> None:
@@ -75,7 +82,6 @@ class OrderAdjusted:
         _require_instance(self.instrument, InstrumentId, "instrument")
         _require_positive_quantity(self.requested_quantity, "requested_quantity")
         _require_positive_quantity(self.adjusted_quantity, "adjusted_quantity")
-        _require_code(self.code)
         _require_timestamp(self.timestamp)
         _require_message(self.message)
 
@@ -86,14 +92,13 @@ class OrderRejected:
 
     order_id: OrderId
     instrument: InstrumentId
-    code: str
     timestamp: datetime
+    code: EventCode = field(init=False, default=EventCode.ORDER_REJECTED)
     message: str | None = None
 
     def __post_init__(self) -> None:
         _require_instance(self.order_id, OrderId, "order_id")
         _require_instance(self.instrument, InstrumentId, "instrument")
-        _require_code(self.code)
         _require_timestamp(self.timestamp)
         _require_message(self.message)
 
@@ -104,14 +109,13 @@ class OrderExpired:
 
     order_id: OrderId
     instrument: InstrumentId
-    code: str
     timestamp: datetime
+    code: EventCode = field(init=False, default=EventCode.ORDER_EXPIRED)
     message: str | None = None
 
     def __post_init__(self) -> None:
         _require_instance(self.order_id, OrderId, "order_id")
         _require_instance(self.instrument, InstrumentId, "instrument")
-        _require_code(self.code)
         _require_timestamp(self.timestamp)
         _require_message(self.message)
 
@@ -125,8 +129,8 @@ class PartialFill:
     instrument: InstrumentId
     side: OrderSide
     quantity: Quantity
-    code: str
     timestamp: datetime
+    code: EventCode = field(init=False, default=EventCode.ORDER_PARTIAL_FILL)
     message: str | None = None
 
     def __post_init__(self) -> None:
@@ -135,7 +139,6 @@ class PartialFill:
         _require_instance(self.instrument, InstrumentId, "instrument")
         _require_instance(self.side, OrderSide, "side")
         _require_positive_quantity(self.quantity, "quantity")
-        _require_code(self.code)
         _require_timestamp(self.timestamp)
         _require_message(self.message)
 
@@ -145,13 +148,12 @@ class DataUnavailable:
     """A decision could not use data required for the specified instrument."""
 
     instrument: InstrumentId
-    code: str
     timestamp: datetime
+    code: EventCode = field(init=False, default=EventCode.DATA_UNAVAILABLE)
     message: str | None = None
 
     def __post_init__(self) -> None:
         _require_instance(self.instrument, InstrumentId, "instrument")
-        _require_code(self.code)
         _require_timestamp(self.timestamp)
         _require_message(self.message)
 
@@ -162,13 +164,12 @@ class DecisionTraceEntry:
 
     instrument: InstrumentId
     reason: DecisionReason
-    code: str
     timestamp: datetime
+    code: EventCode = field(init=False, default=EventCode.DECISION_TRACE)
     message: str | None = None
 
     def __post_init__(self) -> None:
         _require_instance(self.instrument, InstrumentId, "instrument")
         _require_instance(self.reason, DecisionReason, "reason")
-        _require_code(self.code)
         _require_timestamp(self.timestamp)
         _require_message(self.message)

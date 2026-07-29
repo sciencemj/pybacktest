@@ -1,5 +1,5 @@
 from dataclasses import FrozenInstanceError, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -34,23 +34,66 @@ from pybacktest.domain.orders import (
 
 NOW = datetime(2024, 1, 2, 14, 30, tzinfo=UTC)
 AAPL = InstrumentId.parse("XNAS:AAPL")
+DEFAULT_FILL_PRICE = Money.usd("100")
+DEFAULT_FILL_FEE = Money.usd("0")
 
 
-def make_order() -> Order:
+def make_order(
+    *,
+    side: OrderSide = OrderSide.BUY,
+    active_from: datetime = NOW,
+) -> Order:
     return Order.pending(
         id=OrderId.new(),
         instrument=AAPL,
-        side=OrderSide.BUY,
+        side=side,
         type=OrderType.LIMIT,
         quantity=Quantity.of("10"),
+        quote_currency="USD",
         limit_price=Money.usd("100"),
         time_in_force=TimeInForce.DAY,
         submitted_at=NOW,
-        active_from=NOW,
+        active_from=active_from,
         reason=DecisionReason.of(
             "ma_cross",
             signal="fast_crossed_above_slow",
         ),
+    )
+
+
+def pending_order_arguments(**overrides: object) -> dict[str, object]:
+    arguments: dict[str, object] = {
+        "id": OrderId.new(),
+        "instrument": AAPL,
+        "side": OrderSide.BUY,
+        "type": OrderType.LIMIT,
+        "quantity": Quantity.of("10"),
+        "limit_price": Money.usd("100"),
+        "time_in_force": TimeInForce.DAY,
+        "submitted_at": NOW,
+        "active_from": NOW,
+        "reason": DecisionReason.of("ma_cross"),
+    }
+    arguments.update(overrides)
+    return arguments
+
+
+def matching_fill(
+    order: Order,
+    *,
+    price: Money = DEFAULT_FILL_PRICE,
+    fee: Money = DEFAULT_FILL_FEE,
+    timestamp: datetime = NOW,
+) -> Fill:
+    return Fill(
+        id=FillId.new(),
+        order_id=order.id,
+        instrument=order.instrument,
+        side=order.side,
+        quantity=Quantity.of("1"),
+        price=price,
+        fee=fee,
+        timestamp=timestamp,
     )
 
 
@@ -231,6 +274,7 @@ def test_order_boundary_models_reject_nonpositive_requested_quantities(
             side=OrderSide.BUY,
             type=OrderType.LIMIT,
             quantity=quantity,
+            quote_currency="USD",
             limit_price=Money.usd("100"),
             time_in_force=TimeInForce.DAY,
             submitted_at=NOW,
@@ -290,28 +334,26 @@ def test_structured_events_have_codes_timestamps_and_typed_identities():
     fill_id = FillId.new()
     reason = DecisionReason.of("ma_cross", signal="cross")
     events = [
-        OrderAccepted(order_id, AAPL, "order.accepted", NOW),
+        OrderAccepted(order_id, AAPL, NOW),
         OrderAdjusted(
             order_id,
             AAPL,
             Quantity.of("10"),
             Quantity.of("8"),
-            "order.adjusted",
             NOW,
         ),
-        OrderRejected(order_id, AAPL, "order.rejected", NOW, "broker denied"),
-        OrderExpired(order_id, AAPL, "order.expired", NOW),
+        OrderRejected(order_id, AAPL, NOW, "broker denied"),
+        OrderExpired(order_id, AAPL, NOW),
         PartialFill(
             order_id,
             fill_id,
             AAPL,
             OrderSide.BUY,
             Quantity.of("3"),
-            "order.partial_fill",
             NOW,
         ),
-        DataUnavailable(AAPL, "data.unavailable", NOW, "missing bar"),
-        DecisionTraceEntry(AAPL, reason, "decision.trace", NOW),
+        DataUnavailable(AAPL, NOW, "missing bar"),
+        DecisionTraceEntry(AAPL, reason, NOW),
     ]
 
     assert [event.code for event in events] == [
@@ -330,4 +372,205 @@ def test_structured_events_have_codes_timestamps_and_typed_identities():
 
 def test_order_accepted_event_rejects_untyped_order_identity():
     with pytest.raises(ConfigurationError, match="order_id"):
-        OrderAccepted("order_" + "a" * 32, AAPL, "order.accepted", NOW)  # type: ignore[arg-type]
+        OrderAccepted("order_" + "a" * 32, AAPL, NOW)  # type: ignore[arg-type]
+
+
+def test_order_pending_requires_and_normalizes_explicit_quote_currency():
+    with pytest.raises(TypeError, match="quote_currency"):
+        Order.pending(**pending_order_arguments())  # type: ignore[arg-type]
+
+    order = Order.pending(
+        **pending_order_arguments(quote_currency="usd")  # type: ignore[arg-type]
+    )
+    assert order.quote_currency == "USD"
+
+
+def test_limit_order_requires_quote_currency_matching_its_limit_price():
+    with pytest.raises(ConfigurationError, match="quote_currency"):
+        Order.pending(
+            **pending_order_arguments(quote_currency="KRW")  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
+    ("side", "execution_price"),
+    [
+        (OrderSide.BUY, Money.usd("100.01")),
+        (OrderSide.SELL, Money.usd("99.99")),
+    ],
+)
+def test_limit_order_rejects_worse_execution_prices(
+    side: OrderSide,
+    execution_price: Money,
+):
+    order = make_order(side=side).accept()
+
+    with pytest.raises(ConfigurationError, match="limit"):
+        order.apply_fill(matching_fill(order, price=execution_price))
+
+
+def test_market_order_rejects_fill_currency_outside_explicit_quote_currency():
+    order = Order.pending(
+        **pending_order_arguments(
+            type=OrderType.MARKET,
+            limit_price=None,
+            quote_currency="USD",
+        )  # type: ignore[arg-type]
+    ).accept()
+
+    with pytest.raises(ConfigurationError, match="currency"):
+        order.apply_fill(
+            matching_fill(
+                order,
+                price=Money.of("100", "KRW"),
+                fee=Money.of("0", "KRW"),
+            )
+        )
+
+
+def test_fill_rejects_naive_timestamp():
+    order = make_order()
+
+    with pytest.raises(ConfigurationError, match="timezone-aware"):
+        matching_fill(order, timestamp=datetime(2024, 1, 2, 14, 30))
+
+
+def test_order_rejects_fill_before_active_from():
+    order = make_order(active_from=NOW + timedelta(minutes=1)).accept()
+
+    with pytest.raises(ConfigurationError, match="active_from"):
+        order.apply_fill(matching_fill(order, timestamp=NOW))
+
+
+def order_with_status(status: OrderStatus) -> Order:
+    pending = make_order()
+    if status is OrderStatus.PENDING:
+        return pending
+    accepted = pending.accept()
+    if status is OrderStatus.ACCEPTED:
+        return accepted
+    partial = accepted.apply_fill(matching_fill(accepted))
+    if status is OrderStatus.PARTIALLY_FILLED:
+        return partial
+    if status is OrderStatus.FILLED:
+        return partial.apply_fill(
+            Fill(
+                id=FillId.new(),
+                order_id=partial.id,
+                instrument=partial.instrument,
+                side=partial.side,
+                quantity=Quantity.of("9"),
+                price=Money.usd("100"),
+                fee=Money.usd("0"),
+                timestamp=NOW,
+            )
+        )
+    if status is OrderStatus.CANCELLED:
+        return partial.cancel("cancelled")
+    if status is OrderStatus.REJECTED:
+        return accepted.reject()
+    raise AssertionError(f"Unhandled status: {status}")
+
+
+def apply_matrix_action(order: Order, action: str) -> Order:
+    if action == "accept":
+        return order.accept()
+    if action == "fill":
+        return order.apply_fill(matching_fill(order))
+    if action == "cancel":
+        return order.cancel("matrix")
+    if action == "reject":
+        return order.reject()
+    raise AssertionError(f"Unhandled action: {action}")
+
+
+@pytest.mark.parametrize(
+    ("source_status", "action", "expected_status"),
+    [
+        (OrderStatus.PENDING, "accept", OrderStatus.ACCEPTED),
+        (OrderStatus.PENDING, "fill", None),
+        (OrderStatus.PENDING, "cancel", OrderStatus.CANCELLED),
+        (OrderStatus.PENDING, "reject", OrderStatus.REJECTED),
+        (OrderStatus.ACCEPTED, "accept", None),
+        (OrderStatus.ACCEPTED, "fill", OrderStatus.PARTIALLY_FILLED),
+        (OrderStatus.ACCEPTED, "cancel", OrderStatus.CANCELLED),
+        (OrderStatus.ACCEPTED, "reject", OrderStatus.REJECTED),
+        (OrderStatus.PARTIALLY_FILLED, "accept", None),
+        (OrderStatus.PARTIALLY_FILLED, "fill", OrderStatus.PARTIALLY_FILLED),
+        (OrderStatus.PARTIALLY_FILLED, "cancel", OrderStatus.CANCELLED),
+        (OrderStatus.PARTIALLY_FILLED, "reject", None),
+        (OrderStatus.FILLED, "accept", None),
+        (OrderStatus.FILLED, "fill", None),
+        (OrderStatus.FILLED, "cancel", None),
+        (OrderStatus.FILLED, "reject", None),
+        (OrderStatus.CANCELLED, "accept", None),
+        (OrderStatus.CANCELLED, "fill", None),
+        (OrderStatus.CANCELLED, "cancel", None),
+        (OrderStatus.CANCELLED, "reject", None),
+        (OrderStatus.REJECTED, "accept", None),
+        (OrderStatus.REJECTED, "fill", None),
+        (OrderStatus.REJECTED, "cancel", None),
+        (OrderStatus.REJECTED, "reject", None),
+    ],
+)
+def test_order_transition_matrix(
+    source_status: OrderStatus,
+    action: str,
+    expected_status: OrderStatus | None,
+):
+    order = order_with_status(source_status)
+
+    if expected_status is None:
+        with pytest.raises(ConfigurationError):
+            apply_matrix_action(order, action)
+    else:
+        assert apply_matrix_action(order, action).status is expected_status
+
+
+def test_events_fix_codes_and_disallow_mismatched_code_override():
+    accepted = OrderAccepted(OrderId.new(), AAPL, NOW)
+
+    assert accepted.code == "order.accepted"
+    with pytest.raises(TypeError, match="code"):
+        OrderAccepted(
+            order_id=OrderId.new(),
+            instrument=AAPL,
+            timestamp=NOW,
+            code="order.rejected",
+        )
+
+
+@pytest.mark.parametrize(
+    "construct",
+    [
+        lambda: OrderAccepted(OrderId.new(), AAPL, datetime(2024, 1, 2, 14, 30)),
+        lambda: OrderRejected(OrderId.new(), AAPL, NOW, ""),
+        lambda: OrderAccepted("order_" + "a" * 32, AAPL, NOW),
+        lambda: PartialFill(
+            OrderId.new(),
+            "fill_" + "a" * 32,
+            AAPL,
+            OrderSide.BUY,
+            Quantity.of("1"),
+            NOW,
+        ),
+        lambda: OrderAdjusted(
+            OrderId.new(),
+            AAPL,
+            Quantity.of("0"),
+            Quantity.of("1"),
+            NOW,
+        ),
+        lambda: PartialFill(
+            OrderId.new(),
+            FillId.new(),
+            AAPL,
+            OrderSide.BUY,
+            Quantity.of("-1"),
+            NOW,
+        ),
+    ],
+)
+def test_event_constructors_enforce_shared_invariants(construct):
+    with pytest.raises(ConfigurationError):
+        construct()
