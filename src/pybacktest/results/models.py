@@ -17,6 +17,9 @@ from pybacktest.domain.identifiers import OrderId, RunId
 from pybacktest.domain.orders import Fill, Order
 from pybacktest.domain.portfolio import PortfolioSnapshot
 
+from ._decimal import ExactDecimalError, exact_add
+from .artifact_schema import ARTIFACT_ALL_FILES, ARTIFACT_PAYLOAD_FILES
+
 JSONScalar: TypeAlias = str | int | float | bool | None
 FrozenJSON: TypeAlias = (
     JSONScalar | tuple["FrozenJSON", ...] | Mapping[str, "FrozenJSON"]
@@ -42,16 +45,56 @@ class FrozenMapping(Mapping[str, FrozenJSON]):
 
     _items: tuple[tuple[str, FrozenJSON], ...] = field(repr=False)
 
+    def __post_init__(self) -> None:
+        if isinstance(self._items, (str, bytes, bytearray)):
+            raise ResultValidationError(
+                "frozen mapping items must be key-value pairs."
+            )
+        try:
+            raw_items = tuple(self._items)
+        except TypeError as error:
+            raise ResultValidationError(
+                "frozen mapping items must be key-value pairs."
+            ) from error
+        copied: list[tuple[str, FrozenJSON]] = []
+        seen: set[str] = set()
+        for raw_item in raw_items:
+            if isinstance(raw_item, (str, bytes, bytearray)):
+                raise ResultValidationError(
+                    "frozen mapping items must be key-value pairs."
+                )
+            try:
+                pair = tuple(raw_item)
+            except TypeError as error:
+                raise ResultValidationError(
+                    "frozen mapping items must be key-value pairs."
+                ) from error
+            if len(pair) != 2:
+                raise ResultValidationError(
+                    "frozen mapping items must be key-value pairs."
+                )
+            key, value = pair
+            if not isinstance(key, str):
+                raise ResultValidationError(
+                    "frozen mapping keys must be strings."
+                )
+            if key in seen:
+                raise ResultValidationError(
+                    "frozen mapping keys must be unique."
+                )
+            seen.add(key)
+            copied.append((key, _freeze_json(value, active=set())))
+        object.__setattr__(self, "_items", tuple(copied))
+
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> FrozenMapping:
         if not isinstance(value, Mapping):
             raise ResultValidationError("value must be a mapping.")
-        copied: list[tuple[str, FrozenJSON]] = []
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise ResultValidationError("frozen mapping keys must be strings.")
-            copied.append((key, freeze_json(item)))
-        return cls(tuple(copied))
+        raw_items = cast(
+            "tuple[tuple[str, FrozenJSON], ...]",
+            tuple(value.items()),
+        )
+        return cls(raw_items)
 
     def __getitem__(self, key: str) -> FrozenJSON:
         for candidate, value in self._items:
@@ -66,8 +109,7 @@ class FrozenMapping(Mapping[str, FrozenJSON]):
         return len(self._items)
 
 
-def freeze_json(value: object) -> FrozenJSON:
-    """Copy JSON-compatible data into recursively immutable values."""
+def _freeze_json(value: object, *, active: set[int]) -> FrozenJSON:
     if value is None:
         return None
     if isinstance(value, str):
@@ -83,15 +125,39 @@ def freeze_json(value: object) -> FrozenJSON:
     if isinstance(value, FrozenMapping):
         return value
     if isinstance(value, Mapping):
-        return FrozenMapping.from_mapping(
-            cast("Mapping[str, object]", value)
-        )
+        identity = id(value)
+        if identity in active:
+            raise ResultValidationError("cyclic JSON values are not supported.")
+        active.add(identity)
+        try:
+            copied: list[tuple[str, FrozenJSON]] = []
+            for key, item in cast("Mapping[object, object]", value).items():
+                if not isinstance(key, str):
+                    raise ResultValidationError(
+                        "frozen mapping keys must be strings."
+                    )
+                copied.append((key, _freeze_json(item, active=active)))
+            return FrozenMapping(tuple(copied))
+        finally:
+            active.remove(identity)
     if isinstance(value, Sequence) and not isinstance(
         value,
         (str, bytes, bytearray),
     ):
-        return tuple(freeze_json(item) for item in value)
+        identity = id(value)
+        if identity in active:
+            raise ResultValidationError("cyclic JSON values are not supported.")
+        active.add(identity)
+        try:
+            return tuple(_freeze_json(item, active=active) for item in value)
+        finally:
+            active.remove(identity)
     raise ResultValidationError("value must contain only JSON-compatible data.")
+
+
+def freeze_json(value: object) -> FrozenJSON:
+    """Copy JSON-compatible data into recursively immutable values."""
+    return _freeze_json(value, active=set())
 
 
 def _token(value: object, field_name: str) -> str:
@@ -579,11 +645,9 @@ class ArtifactManifest:
         if not all(isinstance(item, ArtifactFile) for item in files):
             raise ResultValidationError("files must contain ArtifactFile values.")
         names = tuple(item.name for item in files)
-        if len(set(names)) != len(names):
-            raise ResultValidationError("artifact file names must be unique.")
-        if {"manifest.json", "manifest.sha256"} & set(names):
+        if names != ARTIFACT_PAYLOAD_FILES:
             raise ResultValidationError(
-                "embedded manifest files must exclude manifest trust files."
+                "manifest files must match the ordered payload graph exactly."
             )
         object.__setattr__(self, "files", files)
 
@@ -611,19 +675,15 @@ class ArtifactRef:
         if not all(isinstance(item, ArtifactFile) for item in files):
             raise ResultValidationError("files must contain ArtifactFile values.")
         names = tuple(item.name for item in files)
-        if len(set(names)) != len(names):
-            raise ResultValidationError("artifact file names must be unique.")
-        if set(names) != {
-            "manifest.json",
-            "manifest.sha256",
-            *(item.name for item in self.manifest.files),
-        }:
+        if names != ARTIFACT_ALL_FILES:
             raise ResultValidationError(
-                "ArtifactRef files must include payload and trust files exactly."
+                "ArtifactRef files must match the ordered file graph exactly."
             )
-        manifest_file = next(
-            item for item in files if item.name == "manifest.json"
-        )
+        if files[: len(ARTIFACT_PAYLOAD_FILES)] != self.manifest.files:
+            raise ResultValidationError(
+                "ArtifactRef payload files must equal manifest files exactly."
+            )
+        manifest_file = files[len(ARTIFACT_PAYLOAD_FILES)]
         if manifest_file.sha256 != self.manifest_checksum:
             raise ResultValidationError(
                 "manifest_checksum must match the manifest file."
@@ -712,10 +772,15 @@ class BacktestResult:
                 raise ResultValidationError(
                     "fill identity and order relationship is inconsistent."
                 )
-            filled_by_order[order.id] = (
-                filled_by_order.get(order.id, Decimal("0"))
-                + fill.quantity.value
-            )
+            try:
+                filled_by_order[order.id] = exact_add(
+                    filled_by_order.get(order.id, Decimal("0")),
+                    fill.quantity.value,
+                )
+            except ExactDecimalError as error:
+                raise ResultValidationError(
+                    "fill aggregation exceeds the supported numeric range."
+                ) from error
         for order in orders:
             if filled_by_order.get(order.id, Decimal("0")) != (
                 order.filled_quantity.value

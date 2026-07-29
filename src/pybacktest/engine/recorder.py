@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal
 
 from pybacktest.domain.errors import PybacktestError
 from pybacktest.domain.identifiers import FillId, OrderId
 from pybacktest.domain.orders import Fill, Order, OrderStatus
 from pybacktest.domain.portfolio import PortfolioSnapshot
+from pybacktest.results._decimal import ExactDecimalError, exact_add, exact_sum
 from pybacktest.results.metrics import MetricsConfig, calculate_metrics
 from pybacktest.results.models import (
     BacktestResult,
@@ -212,15 +212,21 @@ class RunRecorder:
             raise ResultValidationError(
                 "fill identity and order relationship is inconsistent."
             )
-        recorded_quantity = sum(
-            (
+        try:
+            recorded_quantity = exact_sum(
                 item.quantity.value
                 for item in self._fills
                 if item.order_id == fill.order_id
-            ),
-            Decimal("0"),
-        )
-        if recorded_quantity + fill.quantity.value > order.quantity.value:
+            )
+            total_quantity = exact_add(
+                recorded_quantity,
+                fill.quantity.value,
+            )
+        except ExactDecimalError as error:
+            raise ResultValidationError(
+                "fill aggregation exceeds the supported numeric range."
+            ) from error
+        if total_quantity > order.quantity.value:
             raise ResultValidationError(
                 "fill quantity exceeds the recorded order quantity."
             )

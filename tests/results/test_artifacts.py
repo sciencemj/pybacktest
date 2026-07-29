@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -13,7 +15,7 @@ import pytest
 
 from pybacktest.adapters.artifacts import LocalArtifactStore
 from pybacktest.domain.errors import AdapterContractError
-from pybacktest.domain.identifiers import FillId, OrderId, RunId
+from pybacktest.domain.identifiers import CashEventId, FillId, OrderId, RunId
 from pybacktest.domain.instruments import InstrumentId
 from pybacktest.domain.money import Money, Quantity
 from pybacktest.domain.orders import (
@@ -25,10 +27,19 @@ from pybacktest.domain.orders import (
     OrderType,
     TimeInForce,
 )
-from pybacktest.domain.portfolio import PortfolioSnapshot, Position
+from pybacktest.domain.portfolio import (
+    CashEvent,
+    CashEventCode,
+    PortfolioSnapshot,
+    Position,
+)
+from pybacktest.ports import artifacts as artifact_port
 from pybacktest.ports.artifacts import ArtifactStore
 from pybacktest.results.metrics import MetricsConfig, calculate_metrics
 from pybacktest.results.models import (
+    ArtifactFile,
+    ArtifactManifest,
+    ArtifactRef,
     BacktestResult,
     CausalStage,
     EngineEvent,
@@ -51,6 +62,7 @@ _FILES = {
 _PAYLOAD_FILES = _FILES - {"manifest.json", "manifest.sha256"}
 _BASE = datetime(2024, 1, 2, 14, 30, tzinfo=UTC)
 _AAPL = InstrumentId.parse("XNAS:AAPL")
+_MSFT = InstrumentId.parse("XNAS:MSFT")
 
 
 def _manifest(run_digit: str) -> RunManifest:
@@ -201,6 +213,44 @@ def _result(run_digit: str = "1", *, empty: bool = False) -> BacktestResult:
     )
 
 
+def _result_with_complete_snapshot_state() -> BacktestResult:
+    baseline = _result()
+    cash_event = CashEvent(
+        id=CashEventId.parse("cash_event_" + "4" * 32),
+        timestamp=_BASE,
+        amount=Money.usd("10.25"),
+        code=CashEventCode.DIVIDEND,
+    )
+    first = replace(
+        baseline.snapshots[0],
+        cash_events=(cash_event,),
+    )
+    second = replace(
+        baseline.snapshots[1],
+        valuation_prices={
+            **baseline.snapshots[1].valuation_prices,
+            _MSFT: Money.usd("250.125"),
+        },
+        cash_events=(cash_event,),
+    )
+    snapshots = (first, second)
+    summary = calculate_metrics(
+        equity=[snapshot.equity.amount for snapshot in snapshots],
+        fills=baseline.fills,
+        snapshots=snapshots,
+        config=MetricsConfig(
+            risk_free_rate="0",
+            annualization_periods=252,
+        ),
+    )
+    return replace(
+        baseline,
+        snapshots=snapshots,
+        summary=summary,
+        warnings=summary.warnings,
+    )
+
+
 def _file_view(path: Path) -> dict[str, tuple[int, str]]:
     return {
         item.name: (
@@ -307,6 +357,8 @@ def test_parquet_schemas_and_content_are_explicit_and_round_trip(
             "gross_exposure",
             "equity",
             "currency",
+            "cash_events",
+            "valuation_prices",
         ],
         "positions.parquet": [
             "snapshot_sequence",
@@ -389,6 +441,41 @@ def test_parquet_schemas_and_content_are_explicit_and_round_trip(
             "price": "100",
         }
     }
+
+
+def test_snapshot_cash_events_and_all_valuation_prices_round_trip(
+    tmp_path: Path,
+) -> None:
+    result = _result_with_complete_snapshot_state()
+    ref = LocalArtifactStore(tmp_path / "artifacts").write(result)
+
+    equity = pq.read_table(
+        Path(ref.path) / "equity.parquet"
+    ).to_pylist()
+    expected_cash_events = [
+        {
+            "cash_event_id": "cash_event_" + "4" * 32,
+            "timestamp": "2024-01-02T14:30:00.000000Z",
+            "amount": "10.25",
+            "currency": "USD",
+            "code": "dividend",
+        }
+    ]
+    assert json.loads(equity[0]["cash_events"]) == expected_cash_events
+    assert json.loads(equity[1]["cash_events"]) == expected_cash_events
+    assert json.loads(equity[0]["valuation_prices"]) == []
+    assert json.loads(equity[1]["valuation_prices"]) == [
+        {
+            "instrument": "XNAS:AAPL",
+            "amount": "100",
+            "currency": "USD",
+        },
+        {
+            "instrument": "XNAS:MSFT",
+            "amount": "250.125",
+            "currency": "USD",
+        },
+    ]
 
 
 def test_empty_results_keep_all_stable_parquet_schemas(tmp_path: Path) -> None:
@@ -543,16 +630,21 @@ def test_injected_failures_leave_no_target_temp_or_lock(
         monkeypatch.setattr(local, "_write_file", fail_write)
     else:
         monkeypatch.setattr(
-            local.os,
-            "rename",
+            local,
+            "_rename_noreplace",
             lambda *args, **kwargs: (_ for _ in ()).throw(
                 OSError("rename failed")
             ),
         )
 
-    with pytest.raises((RuntimeError, OSError)):
+    expected_error = (
+        RuntimeError if failure == "serialize" else AdapterContractError
+    )
+    with pytest.raises(expected_error) as captured:
         LocalArtifactStore(root).write(result)
 
+    if failure != "serialize":
+        assert captured.value.code == "artifact_io_error"
     assert not (root / str(result.run_id)).exists()
     _assert_no_private_write_state(root)
 
@@ -626,21 +718,336 @@ def test_fsync_temp_rename_and_root_fsync_order_is_observable(
 
     events: list[str] = []
     real_fsync = local.os.fsync
-    real_rename = local.os.rename
+    real_publish = local._rename_noreplace
 
     def recording_fsync(fd: int) -> None:
         events.append("fsync")
         real_fsync(fd)
 
-    def recording_rename(source: object, target: object) -> None:
-        events.append("rename")
-        real_rename(source, target)
+    def recording_publish(
+        root_fd: int,
+        source_name: str,
+        target_name: str,
+    ) -> None:
+        events.append("publish")
+        real_publish(root_fd, source_name, target_name)
 
     monkeypatch.setattr(local.os, "fsync", recording_fsync)
-    monkeypatch.setattr(local.os, "rename", recording_rename)
+    monkeypatch.setattr(local, "_rename_noreplace", recording_publish)
 
     LocalArtifactStore(tmp_path / "artifacts").write(_result())
 
-    assert events.count("rename") == 1
-    assert events[-2:] == ["rename", "fsync"]
-    assert events[: events.index("rename")].count("fsync") >= 10
+    assert events.count("publish") == 1
+    publish_index = events.index("publish")
+    assert events[publish_index + 1 :] == ["fsync", "fsync"]
+    assert events[:publish_index].count("fsync") >= 10
+
+
+@pytest.mark.parametrize("swap", ["root", "ancestor"])
+def test_root_chain_swap_after_pinning_cannot_redirect_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    swap: str,
+) -> None:
+    import pybacktest.adapters.artifacts.local as local
+
+    ancestor = tmp_path / "owned"
+    root = ancestor / "artifacts"
+    root.mkdir(parents=True)
+    outside_ancestor = tmp_path / "outside"
+    outside_root = outside_ancestor / "artifacts"
+    outside_root.mkdir(parents=True)
+    displaced = tmp_path / "displaced"
+    real_safe_root = local._safe_root
+
+    def swap_after_pinning(path: str):
+        pinned = real_safe_root(path)
+        if swap == "root":
+            root.rename(displaced)
+            root.symlink_to(outside_root, target_is_directory=True)
+        else:
+            ancestor.rename(displaced)
+            ancestor.symlink_to(outside_ancestor, target_is_directory=True)
+        return pinned
+
+    monkeypatch.setattr(local, "_safe_root", swap_after_pinning)
+
+    with pytest.raises(AdapterContractError) as captured:
+        LocalArtifactStore(root).write(_result())
+
+    assert captured.value.code == "unsafe_artifact_root"
+    assert list(outside_root.iterdir()) == []
+
+
+@pytest.mark.parametrize("nonempty", [False, True])
+def test_target_created_at_publication_is_never_replaced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    nonempty: bool,
+) -> None:
+    import pybacktest.adapters.artifacts.local as local
+
+    root = tmp_path / "artifacts"
+    result = _result()
+    sentinel = b"owned-by-racer"
+    if hasattr(local, "_rename_noreplace"):
+        real_publish = local._rename_noreplace
+
+        def race_publish(
+            root_fd: int,
+            source_name: str,
+            target_name: str,
+        ) -> None:
+            os.mkdir(target_name, 0o700, dir_fd=root_fd)
+            if nonempty:
+                target_descriptor = os.open(
+                    target_name,
+                    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+                    dir_fd=root_fd,
+                )
+                try:
+                    descriptor = os.open(
+                        "sentinel",
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o600,
+                        dir_fd=target_descriptor,
+                    )
+                    try:
+                        os.write(descriptor, sentinel)
+                    finally:
+                        os.close(descriptor)
+                finally:
+                    os.close(target_descriptor)
+            real_publish(root_fd, source_name, target_name)
+
+        monkeypatch.setattr(local, "_rename_noreplace", race_publish)
+    else:
+        real_publish = local.os.rename
+
+        def race_publish(source: str, target: str) -> None:
+            target_path = Path(target)
+            target_path.mkdir()
+            if nonempty:
+                (target_path / "sentinel").write_bytes(sentinel)
+            real_publish(source, target)
+
+        monkeypatch.setattr(local.os, "rename", race_publish)
+
+    with pytest.raises(AdapterContractError) as captured:
+        LocalArtifactStore(root).write(result)
+
+    assert captured.value.code == "duplicate_artifact"
+    target = root / str(result.run_id)
+    assert target.is_dir()
+    if nonempty:
+        assert (target / "sentinel").read_bytes() == sentinel
+    else:
+        assert list(target.iterdir()) == []
+    _assert_no_private_write_state(root)
+
+
+def test_operations_after_root_pinning_are_descriptor_relative(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import pybacktest.adapters.artifacts.local as local
+
+    after_pinning = False
+    real_safe_root = local._safe_root
+    real_open = local.os.open
+
+    def record_pinning(path: str):
+        nonlocal after_pinning
+        pinned = real_safe_root(path)
+        after_pinning = True
+        return pinned
+
+    def reject_absolute_reopen(path: object, *args, **kwargs):
+        if after_pinning and os.path.isabs(os.fspath(path)):
+            raise AssertionError("artifact path reopened after root pinning")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(local, "_safe_root", record_pinning)
+    monkeypatch.setattr(local.os, "open", reject_absolute_reopen)
+
+    ref = LocalArtifactStore(tmp_path / "artifacts").write(_result())
+
+    assert Path(ref.path).is_dir()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["root_fsync", "root_identity", "lock_removal"],
+)
+def test_post_publish_failures_return_committed_ref_without_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    import pybacktest.adapters.artifacts.local as local
+
+    root = tmp_path / "artifacts"
+    result = _result()
+    if failure == "root_fsync":
+        real_fsync = local._fsync_directory
+        calls = 0
+
+        def fail_root_fsync(directory: object) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("root fsync failed")
+            real_fsync(directory)
+
+        monkeypatch.setattr(local, "_fsync_directory", fail_root_fsync)
+    elif failure == "root_identity":
+        assert hasattr(local, "_verify_root_identity")
+        real_verify = local._verify_root_identity
+        calls = 0
+
+        def fail_post_publish_verify(pinned: object) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                raise OSError("root identity check failed")
+            real_verify(pinned)
+
+        monkeypatch.setattr(
+            local,
+            "_verify_root_identity",
+            fail_post_publish_verify,
+        )
+    else:
+        assert hasattr(local, "_remove_lock")
+
+        def fail_lock_removal(*args, **kwargs) -> None:
+            raise OSError("lock removal failed")
+
+        monkeypatch.setattr(local, "_remove_lock", fail_lock_removal)
+
+    durability_error = getattr(
+        artifact_port,
+        "ArtifactDurabilityError",
+        AdapterContractError,
+    )
+    with pytest.raises(durability_error) as captured:
+        LocalArtifactStore(root).write(result)
+
+    assert captured.value.code == "artifact_published_durability_uncertain"
+    assert captured.value.artifact_ref == ArtifactRef(
+        path=str(root / str(result.run_id)),
+        manifest=captured.value.artifact_ref.manifest,
+        manifest_checksum=captured.value.artifact_ref.manifest_checksum,
+        files=captured.value.artifact_ref.files,
+    )
+    assert (root / str(result.run_id)).is_dir()
+
+
+def test_write_oserror_is_wrapped_as_typed_adapter_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import pybacktest.adapters.artifacts.local as local
+
+    monkeypatch.setattr(
+        local,
+        "_write_file",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("write failed")
+        ),
+    )
+
+    with pytest.raises(AdapterContractError) as captured:
+        LocalArtifactStore(tmp_path / "artifacts").write(_result())
+
+    assert captured.value.code == "artifact_io_error"
+
+
+def _artifact_file(name: str, marker: int) -> ArtifactFile:
+    return ArtifactFile(
+        name=name,
+        size_bytes=marker,
+        sha256=f"{marker:064x}",
+    )
+
+
+def _payload_files() -> tuple[ArtifactFile, ...]:
+    return tuple(
+        _artifact_file(name, index + 1)
+        for index, name in enumerate(
+            (
+                "config.json",
+                "summary.json",
+                "equity.parquet",
+                "positions.parquet",
+                "orders.parquet",
+                "fills.parquet",
+                "events.parquet",
+            )
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        (),
+        _payload_files()[:-1],
+        (*_payload_files(), _artifact_file("extra.json", 20)),
+        (
+            _payload_files()[1],
+            _payload_files()[0],
+            *_payload_files()[2:],
+        ),
+    ],
+)
+def test_artifact_manifest_requires_exact_ordered_payload_graph(
+    files: tuple[ArtifactFile, ...],
+) -> None:
+    with pytest.raises(ResultValidationError):
+        ArtifactManifest(
+            run_manifest=_manifest("1"),
+            artifact_schema_version="artifact.v1",
+            artifact_id="artifact_" + "a" * 64,
+            replay_fingerprint="a" * 64,
+            files=files,
+        )
+
+
+@pytest.mark.parametrize("change", ["reordered", "mismatched"])
+def test_artifact_ref_requires_manifest_payload_entries_by_identity_and_order(
+    change: str,
+) -> None:
+    payload = _payload_files()
+    manifest = ArtifactManifest(
+        run_manifest=_manifest("1"),
+        artifact_schema_version="artifact.v1",
+        artifact_id="artifact_" + "a" * 64,
+        replay_fingerprint="a" * 64,
+        files=payload,
+    )
+    manifest_file = _artifact_file("manifest.json", 30)
+    sidecar_file = _artifact_file("manifest.sha256", 31)
+    if change == "reordered":
+        files = (
+            payload[1],
+            payload[0],
+            *payload[2:],
+            manifest_file,
+            sidecar_file,
+        )
+    else:
+        files = (
+            _artifact_file(payload[0].name, 40),
+            *payload[1:],
+            manifest_file,
+            sidecar_file,
+        )
+
+    with pytest.raises(ResultValidationError):
+        ArtifactRef(
+            path="/safe/run",
+            manifest=manifest,
+            manifest_checksum=manifest_file.sha256,
+            files=files,
+        )

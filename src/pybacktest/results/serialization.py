@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
 from math import isfinite
+from typing import cast
 
 from pybacktest.domain.errors import PybacktestError
 from pybacktest.domain.identifiers import CashEventId, FillId, OrderId, RunId
@@ -38,11 +39,11 @@ class _IdentifierOrdinals:
                 if event.id.value not in cash_ids:
                     cash_ids[event.id.value] = f"cash_event:{len(cash_ids)}"
         self._cash_events = cash_ids
-        self._strings = {
-            **self._run,
-            **self._orders,
-            **self._fills,
-            **self._cash_events,
+        self._mapping_fields = {
+            "run_id": ("RunId", self._run),
+            "order_id": ("OrderId", self._orders),
+            "fill_id": ("FillId", self._fills),
+            "cash_event_id": ("CashEventId", self._cash_events),
         }
 
     def identifier(self, value: object) -> str | None:
@@ -56,8 +57,21 @@ class _IdentifierOrdinals:
             return self._cash_events.get(value.value, "cash_event:unbound")
         return None
 
-    def string(self, value: str) -> str:
-        return self._strings.get(value, value)
+    def mapping_identifier(
+        self,
+        field_name: str | None,
+        value: str,
+    ) -> tuple[str, str] | None:
+        if field_name is None:
+            return None
+        definition = self._mapping_fields.get(field_name)
+        if definition is None:
+            return None
+        type_name, identifiers = definition
+        normalized = identifiers.get(value)
+        if normalized is None:
+            return None
+        return type_name, normalized
 
 
 def _type_name(value: object) -> str:
@@ -79,6 +93,7 @@ def _canonical_data(
     *,
     ordinals: _IdentifierOrdinals | None,
     active: set[int],
+    identifier_field: str | None = None,
 ) -> object:
     normalized_id = ordinals.identifier(value) if ordinals is not None else None
     if normalized_id is not None:
@@ -109,7 +124,20 @@ def _canonical_data(
             }
         }
     if isinstance(value, str):
-        return ordinals.string(value) if ordinals is not None else value
+        normalized_mapping_id = (
+            ordinals.mapping_identifier(identifier_field, value)
+            if ordinals is not None
+            else None
+        )
+        if normalized_mapping_id is None:
+            return value
+        type_name, normalized_value = normalized_mapping_id
+        return {
+            "$identifier": {
+                "type": type_name,
+                "value": normalized_value,
+            }
+        }
     if type(value) is int:
         return value
     if type(value) is float:
@@ -139,13 +167,18 @@ def _canonical_data(
     try:
         if isinstance(value, Mapping):
             if all(isinstance(key, str) for key in value):
+                string_mapping = cast(
+                    "Mapping[str, object]",
+                    value,
+                )
                 return {
                     key: _canonical_data(
                         item,
                         ordinals=ordinals,
                         active=active,
+                        identifier_field=key,
                     )
-                    for key, item in value.items()
+                    for key, item in string_mapping.items()
                 }
             items: list[tuple[str, object, object]] = []
             seen_keys: set[str] = set()

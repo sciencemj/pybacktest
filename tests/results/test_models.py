@@ -112,7 +112,12 @@ def _snapshot(timestamp: datetime, equity: object = "1000") -> PortfolioSnapshot
     )
 
 
-def _filled_order(order_id: OrderId, *, quantity: object = "1") -> Order:
+def _filled_order(
+    order_id: OrderId,
+    *,
+    quantity: object = "1",
+    reason_details: dict[str, object] | None = None,
+) -> Order:
     return Order(
         id=order_id,
         instrument=_AAPL,
@@ -124,7 +129,10 @@ def _filled_order(order_id: OrderId, *, quantity: object = "1") -> Order:
         time_in_force=TimeInForce.GOOD_TIL_CANCELLED,
         submitted_at=_BASE,
         active_from=_BASE + timedelta(seconds=1),
-        reason=DecisionReason.of("test.buy"),
+        reason=DecisionReason(
+            code="test.buy",
+            details=reason_details or {},
+        ),
         status=OrderStatus.FILLED,
         filled_quantity=Quantity.of(quantity),
     )
@@ -161,6 +169,8 @@ def _result(
     stage: str = "fill",
     code: str = "broker.filled",
     event_message: str | None = None,
+    event_details: dict[str, object] | None = None,
+    reason_details: dict[str, object] | None = None,
 ) -> BacktestResult:
     resolved_order = order_id or _order_id()
     resolved_fill = fill_id or _fill_id()
@@ -172,7 +182,12 @@ def _result(
         summary=summary,
         market_timestamps=timestamps,
         snapshots=snapshots,
-        orders=(_filled_order(resolved_order),),
+        orders=(
+            _filled_order(
+                resolved_order,
+                reason_details=reason_details,
+            ),
+        ),
         fills=(_fill(resolved_fill, resolved_order, price=price),),
         events=(
             EngineEvent(
@@ -181,7 +196,8 @@ def _result(
                 stage=CausalStage.of(stage),
                 code=EngineEventCode.of(code),
                 order_id=resolved_order,
-                details={"price": str(price), "nested": {"path": [1, 2]}},
+                details=event_details
+                or {"price": str(price), "nested": {"path": [1, 2]}},
                 message=event_message,
             ),
         ),
@@ -206,6 +222,55 @@ def test_event_recursively_copies_and_freezes_nested_details() -> None:
     assert nested["path"] == (1, 2)
     with pytest.raises((FrozenInstanceError, TypeError, AttributeError)):
         event.details["new"] = "value"  # type: ignore[index]
+
+
+def test_direct_frozen_mapping_construction_refreezes_nested_values() -> None:
+    nested = {"path": [1, 2]}
+    frozen = FrozenMapping((("nested", nested),))
+    nested["path"].append(3)
+
+    copied = frozen["nested"]
+    assert isinstance(copied, FrozenMapping)
+    assert copied["path"] == (1, 2)
+
+
+@pytest.mark.parametrize(
+    "items",
+    [
+        (("duplicate", 1), ("duplicate", 2)),
+        ((1, "not-a-string-key"),),
+        (("missing-value",),),
+        ("not-a-pair",),
+    ],
+)
+def test_direct_frozen_mapping_rejects_malformed_or_duplicate_items(
+    items: object,
+) -> None:
+    with pytest.raises(ResultValidationError):
+        FrozenMapping(items)  # type: ignore[arg-type]
+
+
+def test_frozen_mapping_rejects_recursive_mutable_input() -> None:
+    recursive: list[object] = []
+    recursive.append(recursive)
+
+    with pytest.raises(ResultValidationError):
+        FrozenMapping((("recursive", recursive),))
+
+
+def test_event_refreezes_an_already_created_frozen_mapping() -> None:
+    nested = [1, 2]
+    direct = FrozenMapping((("nested", nested),))
+    event = EngineEvent(
+        timestamp=_BASE,
+        sequence=0,
+        stage=CausalStage.of("feature"),
+        code=EngineEventCode.of("decision.feature"),
+        details=direct,
+    )
+    nested.append(3)
+
+    assert event.details["nested"] == (1, 2)
 
 
 @pytest.mark.parametrize(
@@ -388,6 +453,78 @@ def test_replay_fingerprint_normalizes_run_order_fill_ids_and_run_times() -> Non
     assert first.replay_fingerprint() == second.replay_fingerprint()
     assert calculate_replay_fingerprint(first) == first.replay_fingerprint()
     assert first.replay_fingerprint() == first.replay_fingerprint()
+
+
+def test_replay_fingerprint_does_not_collide_id_shaped_prose_with_ordinal() -> None:
+    raw_order_id = _order_id("2")
+    first = _result(
+        order_id=raw_order_id,
+        event_message=str(raw_order_id),
+    )
+    second = _result(
+        manifest=_manifest(
+            run_id=_run_id("9"),
+            started_at=_BASE + timedelta(days=5),
+            ended_at=_BASE + timedelta(days=5, seconds=2),
+        ),
+        order_id=_order_id("8"),
+        fill_id=_fill_id("7"),
+        event_message="order:0",
+    )
+
+    assert first.replay_fingerprint() != second.replay_fingerprint()
+
+
+def test_replay_fingerprint_preserves_id_shaped_ordinary_notes() -> None:
+    first_order = _order_id("2")
+    second_order = _order_id("8")
+    first = _result(
+        order_id=first_order,
+        event_details={"note": str(first_order)},
+        reason_details={"note": str(first_order)},
+    )
+    second = _result(
+        manifest=_manifest(
+            run_id=_run_id("9"),
+            started_at=_BASE + timedelta(days=5),
+            ended_at=_BASE + timedelta(days=5, seconds=2),
+        ),
+        order_id=second_order,
+        fill_id=_fill_id("7"),
+        event_details={"note": str(second_order)},
+        reason_details={"note": str(second_order)},
+    )
+
+    assert first.replay_fingerprint() != second.replay_fingerprint()
+
+
+def test_replay_fingerprint_normalizes_only_exact_designated_id_fields() -> None:
+    first_order = _order_id("2")
+    second_order = _order_id("8")
+    first = _result(
+        order_id=first_order,
+        event_details={
+            "nested": {"order_id": str(first_order)},
+            "OrderId": "literal",
+        },
+        reason_details={"fill_id": str(_fill_id("3"))},
+    )
+    second = _result(
+        manifest=_manifest(
+            run_id=_run_id("9"),
+            started_at=_BASE + timedelta(days=5),
+            ended_at=_BASE + timedelta(days=5, seconds=2),
+        ),
+        order_id=second_order,
+        fill_id=_fill_id("7"),
+        event_details={
+            "nested": {"order_id": str(second_order)},
+            "OrderId": "literal",
+        },
+        reason_details={"fill_id": str(_fill_id("7"))},
+    )
+
+    assert first.replay_fingerprint() == second.replay_fingerprint()
 
 
 @pytest.mark.parametrize(

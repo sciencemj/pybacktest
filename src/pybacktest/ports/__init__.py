@@ -1,6 +1,6 @@
 """Interfaces implemented by Pybacktest boundary adapters."""
 
-from .artifacts import ArtifactStore
+from .artifacts import ArtifactDurabilityError, ArtifactStore
 from .broker import (
     BorrowCostModel,
     Broker,
@@ -33,6 +33,7 @@ from .strategy import (
 )
 
 __all__ = [
+    "ArtifactDurabilityError",
     "ArtifactStore",
     "BorrowCostModel",
     "Broker",

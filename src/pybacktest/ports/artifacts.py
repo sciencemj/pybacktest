@@ -2,7 +2,24 @@
 
 from typing import Protocol, runtime_checkable
 
+from pybacktest.domain.errors import AdapterContractError
 from pybacktest.results.models import ArtifactRef, BacktestResult
+
+
+class ArtifactDurabilityError(AdapterContractError):
+    """Publication committed, but its final durability could not be confirmed."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        artifact_ref: ArtifactRef,
+    ) -> None:
+        super().__init__(
+            message,
+            code="artifact_published_durability_uncertain",
+        )
+        self.artifact_ref = artifact_ref
 
 
 @runtime_checkable
@@ -14,4 +31,4 @@ class ArtifactStore(Protocol):
         raise NotImplementedError
 
 
-__all__ = ["ArtifactStore"]
+__all__ = ["ArtifactDurabilityError", "ArtifactStore"]

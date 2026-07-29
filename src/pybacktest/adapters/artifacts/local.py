@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 import importlib
 import os
 import stat
+import sys
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -15,6 +20,12 @@ from typing import Any
 from pybacktest.domain.errors import AdapterContractError
 from pybacktest.domain.orders import Fill, Order
 from pybacktest.domain.portfolio import PortfolioSnapshot
+from pybacktest.ports.artifacts import ArtifactDurabilityError
+from pybacktest.results._decimal import ExactDecimalError, exact_multiply
+from pybacktest.results.artifact_schema import (
+    ARTIFACT_ALL_FILES,
+    ARTIFACT_PAYLOAD_FILES,
+)
 from pybacktest.results.models import (
     ArtifactFile,
     ArtifactManifest,
@@ -33,17 +44,7 @@ from pybacktest.results.serialization import (
     canonical_json_text,
 )
 
-_PAYLOAD_ORDER = (
-    "config.json",
-    "summary.json",
-    "equity.parquet",
-    "positions.parquet",
-    "orders.parquet",
-    "fills.parquet",
-    "events.parquet",
-)
-_TRUST_ORDER = ("manifest.json", "manifest.sha256")
-_ALL_FILES = frozenset((*_PAYLOAD_ORDER, *_TRUST_ORDER))
+_ALL_FILES = frozenset(ARTIFACT_ALL_FILES)
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 
@@ -142,6 +143,35 @@ def _equity_rows(
             "gross_exposure": str(snapshot.gross_exposure.amount),
             "equity": str(snapshot.equity.amount),
             "currency": snapshot.equity.currency,
+            "cash_events": canonical_json_text(
+                [
+                    {
+                        "cash_event_id": str(event.id),
+                        "timestamp": _utc_text(event.timestamp),
+                        "amount": str(event.amount.amount),
+                        "currency": event.amount.currency,
+                        "code": event.code.value,
+                    }
+                    for event in snapshot.cash_events
+                ]
+            ),
+            "valuation_prices": canonical_json_text(
+                [
+                    {
+                        "instrument": str(instrument_id),
+                        "amount": str(
+                            snapshot.valuation_prices[instrument_id].amount
+                        ),
+                        "currency": (
+                            snapshot.valuation_prices[instrument_id].currency
+                        ),
+                    }
+                    for instrument_id in sorted(
+                        snapshot.valuation_prices,
+                        key=str,
+                    )
+                ]
+            ),
         }
         for sequence, snapshot in enumerate(snapshots)
         if snapshot.timestamp is not None
@@ -159,16 +189,22 @@ def _position_rows(
             position = snapshot.positions[instrument_id]
             valuation = snapshot.valuation_prices.get(instrument_id)
             if valuation is None:
-                direction = (
-                    Decimal("1")
-                    if position.quantity.value > Decimal("0")
-                    else Decimal("-1")
-                )
-                market_value = direction * position.book_cost.amount
-            else:
                 market_value = (
-                    position.quantity.value * valuation.amount
+                    position.book_cost.amount
+                    if position.quantity.value > Decimal("0")
+                    else position.book_cost.amount.copy_negate()
                 )
+            else:
+                try:
+                    market_value = exact_multiply(
+                        position.quantity.value,
+                        valuation.amount,
+                    )
+                except ExactDecimalError as error:
+                    raise AdapterContractError(
+                        "position valuation exceeds the supported numeric range.",
+                        code="artifact_numeric_range",
+                    ) from error
             rows.append(
                 {
                     "snapshot_sequence": sequence,
@@ -283,6 +319,8 @@ def _schema(pa: Any, name: str) -> Any:
                 _string_field(pa, "gross_exposure"),
                 _string_field(pa, "equity"),
                 _string_field(pa, "currency"),
+                _string_field(pa, "cash_events"),
+                _string_field(pa, "valuation_prices"),
             ]
         ),
         "positions.parquet": pa.schema(
@@ -402,104 +440,272 @@ def _artifact_manifest_bytes(
     )
 
 
-def _write_file(path: str, data: bytes) -> ArtifactFile:
+def _write_file(
+    directory_fd: int,
+    name: str,
+    data: bytes,
+) -> ArtifactFile:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW
-    descriptor = os.open(path, flags, 0o600)
+    descriptor = os.open(name, flags, 0o600, dir_fd=directory_fd)
     try:
         with os.fdopen(descriptor, "wb", closefd=False) as stream:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
+        file_stat = os.fstat(descriptor)
     finally:
         os.close(descriptor)
-    file_stat = os.stat(path, follow_symlinks=False)
     if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_size != len(data):
         raise AdapterContractError(
             "artifact file changed while it was being finalized.",
             code="artifact_file_race",
         )
     return ArtifactFile(
-        name=os.path.basename(path),
+        name=name,
         size_bytes=file_stat.st_size,
         sha256=hashlib.sha256(data).hexdigest(),
     )
 
 
-def _safe_root(root: str) -> str:
+@dataclass(frozen=True, slots=True)
+class _PinnedEntry:
+    parent_fd: int
+    name: str
+    identity: tuple[int, int]
+
+
+@dataclass(slots=True)
+class _PinnedRoot:
+    path: str
+    descriptors: tuple[int, ...]
+    entries: tuple[_PinnedEntry, ...]
+
+    @property
+    def fd(self) -> int:
+        return self.descriptors[-1]
+
+    def close(self) -> None:
+        for descriptor in reversed(self.descriptors):
+            with suppress(OSError):
+                os.close(descriptor)
+        self.descriptors = ()
+
+
+def _unsafe_root(message: str, error: OSError | None = None) -> None:
+    contract_error = AdapterContractError(
+        message,
+        code="unsafe_artifact_root",
+    )
+    if error is None:
+        raise contract_error
+    raise contract_error from error
+
+
+def _open_directory(name: str, *, dir_fd: int | None = None) -> int:
+    flags = os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW
+    try:
+        if dir_fd is None:
+            return os.open(name, flags)
+        return os.open(name, flags, dir_fd=dir_fd)
+    except OSError as error:
+        if error.errno in {
+            errno.ELOOP,
+            errno.ENOTDIR,
+        }:
+            _unsafe_root(
+                "artifact root must contain only real directories.",
+                error,
+            )
+        raise
+
+
+def _safe_root(root: str) -> _PinnedRoot:
     planned = Path(root)
     anchor = planned.anchor
-    current = Path(anchor)
-    for part in planned.parts[1:]:
-        current = current / part
-        path = os.fspath(current)
-        if os.path.lexists(path):
-            current_stat = os.lstat(path)
-            if stat.S_ISLNK(current_stat.st_mode):
-                raise AdapterContractError(
-                    "artifact root cannot contain symlinks.",
-                    code="unsafe_artifact_root",
+    descriptors: list[int] = []
+    entries: list[_PinnedEntry] = []
+    try:
+        current_fd = _open_directory(anchor)
+        descriptors.append(current_fd)
+        for part in planned.parts[1:]:
+            try:
+                child_fd = _open_directory(part, dir_fd=current_fd)
+            except FileNotFoundError:
+                with suppress(FileExistsError):
+                    os.mkdir(part, 0o700, dir_fd=current_fd)
+                child_fd = _open_directory(part, dir_fd=current_fd)
+            child_stat = os.fstat(child_fd)
+            if not stat.S_ISDIR(child_stat.st_mode):
+                os.close(child_fd)
+                _unsafe_root("artifact root must be a directory.")
+            entries.append(
+                _PinnedEntry(
+                    parent_fd=current_fd,
+                    name=part,
+                    identity=(child_stat.st_dev, child_stat.st_ino),
                 )
-            if not stat.S_ISDIR(current_stat.st_mode):
-                raise AdapterContractError(
-                    "artifact root must be a directory.",
-                    code="unsafe_artifact_root",
-                )
-            continue
-        try:
-            os.mkdir(path, 0o700)
-        except FileExistsError:
-            current_stat = os.lstat(path)
-            if stat.S_ISLNK(current_stat.st_mode) or not stat.S_ISDIR(
-                current_stat.st_mode
-            ):
-                raise AdapterContractError(
-                    "artifact root creation raced with an unsafe path.",
-                    code="unsafe_artifact_root",
-                ) from None
-    return root
-
-
-def _fsync_directory(path: str) -> None:
-    descriptor = os.open(
-        path,
-        os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW,
+            )
+            descriptors.append(child_fd)
+            current_fd = child_fd
+    except BaseException:
+        for descriptor in reversed(descriptors):
+            with suppress(OSError):
+                os.close(descriptor)
+        raise
+    return _PinnedRoot(
+        path=root,
+        descriptors=tuple(descriptors),
+        entries=tuple(entries),
     )
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
-def _same_inode(path: str, identity: tuple[int, int]) -> bool:
+def _verify_root_identity(root: _PinnedRoot) -> None:
+    for entry in root.entries:
+        try:
+            current = os.stat(
+                entry.name,
+                dir_fd=entry.parent_fd,
+                follow_symlinks=False,
+            )
+        except OSError as error:
+            _unsafe_root(
+                "artifact root identity changed during publication.",
+                error,
+            )
+        if (
+            not stat.S_ISDIR(current.st_mode)
+            or stat.S_ISLNK(current.st_mode)
+            or (current.st_dev, current.st_ino) != entry.identity
+        ):
+            _unsafe_root(
+                "artifact root identity changed during publication."
+            )
+
+
+def _fsync_directory(descriptor: int) -> None:
+    os.fsync(descriptor)
+
+
+def _same_inode_at(
+    directory_fd: int,
+    name: str,
+    identity: tuple[int, int],
+) -> bool:
     try:
-        current = os.lstat(path)
+        current = os.stat(
+            name,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
     except FileNotFoundError:
         return False
     return (current.st_dev, current.st_ino) == identity
 
 
+def _entry_exists(directory_fd: int, name: str) -> bool:
+    try:
+        os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    return True
+
+
 def _cleanup_temp(
-    path: str,
+    root_fd: int,
+    temp_fd: int,
+    temp_name: str,
     *,
     identity: tuple[int, int],
 ) -> None:
-    if not _same_inode(path, identity):
-        return
-    current = os.lstat(path)
-    if not stat.S_ISDIR(current.st_mode) or stat.S_ISLNK(current.st_mode):
-        return
-    for entry in os.scandir(path):
-        if entry.name not in _ALL_FILES:
+    names = os.listdir(temp_fd)
+    for name in names:
+        if name not in _ALL_FILES:
             return
-        entry_stat = entry.stat(follow_symlinks=False)
+        entry_stat = os.stat(
+            name,
+            dir_fd=temp_fd,
+            follow_symlinks=False,
+        )
         if not (
             stat.S_ISREG(entry_stat.st_mode)
             or stat.S_ISLNK(entry_stat.st_mode)
         ):
             return
-    for entry in os.scandir(path):
-        os.unlink(entry.path)
-    os.rmdir(path)
+    for name in names:
+        os.unlink(name, dir_fd=temp_fd)
+    if _same_inode_at(root_fd, temp_name, identity):
+        os.rmdir(temp_name, dir_fd=root_fd)
+
+
+def _remove_lock(
+    root_fd: int,
+    lock_name: str,
+    identity: tuple[int, int],
+) -> None:
+    if _same_inode_at(root_fd, lock_name, identity):
+        os.unlink(lock_name, dir_fd=root_fd)
+
+
+_LIBC = ctypes.CDLL(None, use_errno=True)
+_RENAMEATX_NP: Any | None = getattr(_LIBC, "renameatx_np", None)
+_RENAMEAT2: Any | None = getattr(_LIBC, "renameat2", None)
+if _RENAMEATX_NP is not None:
+    _RENAMEATX_NP.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    _RENAMEATX_NP.restype = ctypes.c_int
+if _RENAMEAT2 is not None:
+    _RENAMEAT2.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    _RENAMEAT2.restype = ctypes.c_int
+
+
+def _rename_noreplace(
+    root_fd: int,
+    source_name: str,
+    target_name: str,
+) -> None:
+    source = os.fsencode(source_name)
+    target = os.fsencode(target_name)
+    if sys.platform == "darwin" and _RENAMEATX_NP is not None:
+        result = _RENAMEATX_NP(
+            root_fd,
+            source,
+            root_fd,
+            target,
+            0x00000004,
+        )
+    elif sys.platform.startswith("linux") and _RENAMEAT2 is not None:
+        result = _RENAMEAT2(
+            root_fd,
+            source,
+            root_fd,
+            target,
+            0x00000001,
+        )
+    else:
+        raise AdapterContractError(
+            "atomic no-replace publication is unavailable on this platform.",
+            code="atomic_noreplace_unavailable",
+        )
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number == errno.EEXIST:
+        raise AdapterContractError(
+            f"artifact target {target_name} already exists.",
+            code="duplicate_artifact",
+        )
+    raise OSError(error_number, os.strerror(error_number))
 
 
 class LocalArtifactStore:
@@ -544,30 +750,34 @@ class LocalArtifactStore:
         """Write payloads, finalize trust files, and publish by atomic rename."""
         if not isinstance(result, BacktestResult):
             raise ResultValidationError("result must be a BacktestResult.")
-        root = _safe_root(self._root)
         run_name = str(result.run_id)
-        target = os.path.join(root, run_name)
-        lock_path = os.path.join(root, f".{run_name}.lock")
-        temp_path = os.path.join(root, f".{run_name}.tmp")
-        if os.path.lexists(target):
-            raise AdapterContractError(
-                f"artifact for {run_name} already exists.",
-                code="duplicate_artifact",
-            )
-
+        target_path = os.path.join(self._root, run_name)
+        lock_name = f".{run_name}.lock"
+        temp_name = f".{run_name}.tmp"
+        root: _PinnedRoot | None = None
         lock_descriptor: int | None = None
         lock_identity: tuple[int, int] | None = None
+        temp_descriptor: int | None = None
         temp_identity: tuple[int, int] | None = None
-        renamed = False
+        committed = False
+        artifact_ref: ArtifactRef | None = None
         try:
+            root = _safe_root(self._root)
+            _verify_root_identity(root)
+            if _entry_exists(root.fd, run_name):
+                raise AdapterContractError(
+                    f"artifact for {run_name} already exists.",
+                    code="duplicate_artifact",
+                )
             try:
                 lock_descriptor = os.open(
-                    lock_path,
+                    lock_name,
                     os.O_WRONLY
                     | os.O_CREAT
                     | os.O_EXCL
                     | _O_NOFOLLOW,
                     0o600,
+                    dir_fd=root.fd,
                 )
             except FileExistsError as error:
                 raise AdapterContractError(
@@ -580,20 +790,29 @@ class LocalArtifactStore:
             os.fsync(lock_descriptor)
             os.close(lock_descriptor)
             lock_descriptor = None
-            if os.path.lexists(target):
+            if _entry_exists(root.fd, run_name):
                 raise AdapterContractError(
                     f"artifact for {run_name} already exists.",
                     code="duplicate_artifact",
                 )
             try:
-                os.mkdir(temp_path, 0o700)
+                os.mkdir(temp_name, 0o700, dir_fd=root.fd)
             except FileExistsError as error:
                 raise AdapterContractError(
                     "run-specific artifact temporary path already exists.",
                     code="unsafe_temporary_artifact",
                 ) from error
-            temp_stat = os.lstat(temp_path)
+            temp_descriptor = _open_directory(
+                temp_name,
+                dir_fd=root.fd,
+            )
+            temp_stat = os.fstat(temp_descriptor)
             temp_identity = (temp_stat.st_dev, temp_stat.st_ino)
+            if not _same_inode_at(root.fd, temp_name, temp_identity):
+                raise AdapterContractError(
+                    "artifact temporary directory changed after creation.",
+                    code="unsafe_temporary_artifact",
+                )
 
             written: list[ArtifactFile] = []
             total_bytes = 0
@@ -601,7 +820,8 @@ class LocalArtifactStore:
             def write_one(name: str, data: bytes) -> ArtifactFile:
                 nonlocal total_bytes
                 artifact_file = _write_file(
-                    os.path.join(temp_path, name),
+                    temp_descriptor,
+                    name,
                     data,
                 )
                 written.append(artifact_file)
@@ -621,7 +841,7 @@ class LocalArtifactStore:
 
             write_one("config.json", _config_bytes(result))
             write_one("summary.json", _summary_bytes(result.summary))
-            for name in _PAYLOAD_ORDER[2:]:
+            for name in ARTIFACT_PAYLOAD_FILES[2:]:
                 write_one(name, _serialize_parquet(name, result))
 
             replay_fingerprint = calculate_replay_fingerprint(result)
@@ -640,17 +860,8 @@ class LocalArtifactStore:
                 "manifest.sha256",
                 f"{manifest_file.sha256}\n".encode("ascii"),
             )
-            _fsync_directory(temp_path)
-            if os.path.lexists(target):
-                raise AdapterContractError(
-                    f"artifact for {run_name} already exists.",
-                    code="duplicate_artifact",
-                )
-            os.rename(temp_path, target)
-            renamed = True
-            _fsync_directory(root)
-            return ArtifactRef(
-                path=target,
+            artifact_ref = ArtifactRef(
+                path=target_path,
                 manifest=artifact_manifest,
                 manifest_checksum=manifest_file.sha256,
                 files=(
@@ -659,20 +870,71 @@ class LocalArtifactStore:
                     sidecar_file,
                 ),
             )
+            _fsync_directory(temp_descriptor)
+            if not _same_inode_at(root.fd, temp_name, temp_identity):
+                raise AdapterContractError(
+                    "artifact temporary directory changed before publication.",
+                    code="unsafe_temporary_artifact",
+                )
+            _verify_root_identity(root)
+            _rename_noreplace(root.fd, temp_name, run_name)
+            committed = True
+            try:
+                _fsync_directory(root.fd)
+                _verify_root_identity(root)
+                _remove_lock(root.fd, lock_name, lock_identity)
+                lock_identity = None
+                _fsync_directory(root.fd)
+            except Exception as error:
+                if lock_identity is not None:
+                    with suppress(OSError):
+                        _remove_lock(root.fd, lock_name, lock_identity)
+                raise ArtifactDurabilityError(
+                    (
+                        f"artifact for {run_name} was published, but final "
+                        "durability could not be confirmed."
+                    ),
+                    artifact_ref=artifact_ref,
+                ) from error
+            return artifact_ref
+        except OSError as error:
+            if committed and artifact_ref is not None:
+                raise ArtifactDurabilityError(
+                    (
+                        f"artifact for {run_name} was published, but final "
+                        "durability could not be confirmed."
+                    ),
+                    artifact_ref=artifact_ref,
+                ) from error
+            raise AdapterContractError(
+                f"artifact I/O failed for {run_name}.",
+                code="artifact_io_error",
+            ) from error
         finally:
             if lock_descriptor is not None:
-                os.close(lock_descriptor)
+                with suppress(OSError):
+                    os.close(lock_descriptor)
             if (
-                not renamed
+                not committed
+                and root is not None
+                and temp_descriptor is not None
                 and temp_identity is not None
-                and os.path.lexists(temp_path)
             ):
-                _cleanup_temp(temp_path, identity=temp_identity)
-            if (
-                lock_identity is not None
-                and _same_inode(lock_path, lock_identity)
-            ):
-                os.unlink(lock_path)
+                with suppress(OSError):
+                    _cleanup_temp(
+                        root.fd,
+                        temp_descriptor,
+                        temp_name,
+                        identity=temp_identity,
+                    )
+            if temp_descriptor is not None:
+                with suppress(OSError):
+                    os.close(temp_descriptor)
+            if root is not None and lock_identity is not None:
+                with suppress(OSError):
+                    _remove_lock(root.fd, lock_name, lock_identity)
+            if root is not None:
+                root.close()
 
 
 __all__ = ["LocalArtifactStore"]
