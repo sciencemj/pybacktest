@@ -10,12 +10,14 @@ import numpy as np
 from pybacktest.data.dataset import BarSeries, MarketDataSet
 from pybacktest.domain.identifiers import FillId, OrderId
 from pybacktest.domain.instruments import Instrument, InstrumentId
+from pybacktest.domain.market import BarView, MarketSlice
 from pybacktest.domain.money import Money, Quantity
 from pybacktest.domain.orders import (
     DecisionReason,
     Fill,
     Order,
     OrderSide,
+    OrderStatus,
     OrderType,
     TimeInForce,
 )
@@ -151,6 +153,80 @@ def order(
         active_from=submitted_at,
         reason=DecisionReason.of("test_order"),
     )
+
+
+def accepted_order(
+    *,
+    item: Instrument | None = None,
+    order_id: OrderId | None = None,
+    side: OrderSide | str = OrderSide.BUY,
+    order_type: OrderType | str = OrderType.MARKET,
+    quantity: object = "10",
+    limit_price: object | None = None,
+    time_in_force: TimeInForce | str = TimeInForce.GOOD_TIL_CANCELLED,
+    submitted_at: str = "2024-01-02T21:00:00Z",
+    active_from: str = "2024-01-03T14:30:00Z",
+) -> Order:
+    """Return a stable accepted order for broker contract tests."""
+    resolved = item or instrument()
+    resolved_side = OrderSide(side)
+    resolved_type = OrderType(order_type)
+    resolved_time_in_force = TimeInForce(time_in_force)
+    submitted = datetime.fromisoformat(submitted_at.replace("Z", "+00:00"))
+    active = datetime.fromisoformat(active_from.replace("Z", "+00:00"))
+    price = (
+        Money.of(limit_price, resolved.quote_currency)
+        if limit_price is not None
+        else None
+    )
+    return Order(
+        id=order_id or OrderId.parse("order_" + "8" * 32),
+        instrument=resolved.id,
+        side=resolved_side,
+        type=resolved_type,
+        quantity=Quantity.of(quantity),
+        quote_currency=resolved.quote_currency,
+        limit_price=price,
+        time_in_force=resolved_time_in_force,
+        submitted_at=submitted,
+        active_from=active,
+        reason=DecisionReason.of("broker_test"),
+        status=OrderStatus.ACCEPTED,
+        filled_quantity=Quantity.of("0"),
+    )
+
+
+def market_slice(
+    observed_at: str,
+    *,
+    item: Instrument | None = None,
+    open: object = "100",
+    high: object | None = None,
+    low: object | None = None,
+    close: object | None = None,
+    volume: object = "1000",
+) -> MarketSlice:
+    """Return one deterministic current OHLCV bar."""
+    resolved = item or instrument()
+    timestamp = np.datetime64(observed_at.replace("Z", ""), "ns")
+    open_value = float(open)
+    high_value = float(high if high is not None else open)
+    low_value = float(low if low is not None else open)
+    close_value = float(close if close is not None else open)
+    bar = BarView(
+        timestamp=timestamp,
+        open=open_value,
+        high=high_value,
+        low=low_value,
+        close=close_value,
+        volume=float(volume),
+    )
+    return MarketSlice(timestamp=timestamp, bars={resolved.id: bar})
+
+
+def rng(seed: int = 42) -> np.random.Generator:
+    """Return an explicit deterministic engine-style random generator."""
+    return np.random.default_rng(seed)
 
 
 def portfolio_snapshot(
