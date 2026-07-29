@@ -22,7 +22,12 @@ from pybacktest.domain.orders import (
 )
 from pybacktest.ports.risk import RiskContext, SizedOrderIntent
 
-from ._decimal import decimal_context
+from ._decimal import (
+    decimal_context,
+    exact_multiply,
+    exact_subtract,
+    is_aligned,
+)
 
 _ZERO = Decimal("0")
 
@@ -131,21 +136,24 @@ class DefaultOrderSizer:
             )
         mark = mark_or_rejection
         try:
-            values = (
-                equity,
-                intent.weight,
-                mark.amount,
-                instrument.lot_size,
-                current,
-            )
-            with decimal_context(values):
+            notional = exact_multiply(equity, intent.weight)
+            with decimal_context(
+                (
+                    notional,
+                    mark.amount,
+                    instrument.lot_size,
+                )
+            ) as arithmetic:
+                arithmetic.rounding = ROUND_DOWN
+                raw_quantity = notional / mark.amount
                 desired_lots = (
-                    equity
-                    * intent.weight
-                    / (mark.amount * instrument.lot_size)
+                    raw_quantity / instrument.lot_size
                 ).to_integral_value(rounding=ROUND_DOWN)
-                target = desired_lots * instrument.lot_size
-                signed_quantity = target - current
+            target = exact_multiply(
+                desired_lots,
+                instrument.lot_size,
+            )
+            signed_quantity = exact_subtract(target, current)
         except DecimalException:
             return _rejected(
                 intent,
@@ -197,14 +205,10 @@ class DefaultOrderSizer:
                 "Target quantity does not align to the instrument lot size.",
             )
         try:
-            with decimal_context(
-                (
-                    intent.quantity.value,
-                    current,
-                    instrument.lot_size,
-                )
-            ):
-                signed_quantity = intent.quantity.value - current
+            signed_quantity = exact_subtract(
+                intent.quantity.value,
+                current,
+            )
         except DecimalException:
             return _rejected(
                 intent,
@@ -368,11 +372,7 @@ def _rejected(
 
 
 def _aligned(value: Decimal, increment: Decimal) -> bool:
-    try:
-        with decimal_context((value, increment)):
-            return value % increment == _ZERO
-    except DecimalException:
-        return False
+    return is_aligned(value, increment)
 
 
 __all__ = ["DefaultOrderSizer"]

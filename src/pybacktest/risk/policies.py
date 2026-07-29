@@ -18,7 +18,13 @@ from pybacktest.ports.risk import (
     RiskStatus,
 )
 
-from ._decimal import decimal_context
+from ._decimal import (
+    decimal_context,
+    exact_add,
+    exact_multiply,
+    exact_subtract,
+    is_aligned,
+)
 
 _ZERO = Decimal("0")
 
@@ -100,7 +106,7 @@ class LongShortRisk:
         candidates: list[tuple[str, Decimal]] = []
 
         if not self.allow_short and order.side is OrderSide.SELL:
-            projected = current - original
+            projected = exact_subtract(current, original)
             if projected < _ZERO:
                 short_allowed = current if current > _ZERO else _ZERO
                 candidates.append(("short_not_allowed", short_allowed))
@@ -111,7 +117,10 @@ class LongShortRisk:
             position_code = "non_positive_equity"
             if equity > _ZERO:
                 position_cap = _lot_quantity(
-                    equity * self.max_position_weight,
+                    exact_multiply(
+                        equity,
+                        self.max_position_weight,
+                    ),
                     mark.amount,
                     instrument.lot_size,
                 )
@@ -127,13 +136,16 @@ class LongShortRisk:
         gross_cap = _ZERO
         leverage_code = "non_positive_equity"
         if equity > _ZERO:
-            gross_cap = equity * self.max_leverage
+            gross_cap = exact_multiply(equity, self.max_leverage)
             leverage_code = "max_leverage"
         other_gross = _other_gross_exposure(
             context,
             order.instrument,
         )
-        remaining_gross = max(gross_cap - other_gross, _ZERO)
+        remaining_gross = max(
+            exact_subtract(gross_cap, other_gross),
+            _ZERO,
+        )
         leverage_position_cap = _lot_quantity(
             remaining_gross,
             mark.amount,
@@ -164,7 +176,7 @@ class LongShortRisk:
                 affordability_price.amount,
                 instrument.lot_size,
             )
-            closing_short = max(-current, _ZERO)
+            closing_short = max(current.copy_negate(), _ZERO)
             cash_allowed = max(closing_short, cash_quantity)
             if cash_allowed < original:
                 candidates.append(("available_cash", cash_allowed))
@@ -327,27 +339,16 @@ def _other_gross_exposure(
     context: RiskContext,
     excluded: InstrumentId,
 ) -> Decimal:
-    values = [
-        position.quantity.value
-        for position in context.snapshot.positions.values()
-    ]
-    values.extend(price.amount for price in context.prices.values())
-    try:
-        with decimal_context(tuple(values)):
-            return sum(
-                (
-                    abs(position.quantity.value)
-                    * context.prices[instrument_id].amount
-                    for instrument_id, position
-                    in context.snapshot.positions.items()
-                    if instrument_id != excluded
-                ),
-                _ZERO,
-            )
-    except DecimalException as error:
-        raise ConfigurationError(
-            "gross exposure arithmetic is invalid."
-        ) from error
+    total = _ZERO
+    for instrument_id, position in context.snapshot.positions.items():
+        if instrument_id == excluded:
+            continue
+        exposure = exact_multiply(
+            position.quantity.value.copy_abs(),
+            context.prices[instrument_id].amount,
+        )
+        total = exact_add(total, exposure)
+    return total
 
 
 def _directional_quantity_cap(
@@ -356,8 +357,11 @@ def _directional_quantity_cap(
     target_absolute_cap: Decimal,
 ) -> Decimal:
     if direction > _ZERO:
-        return max(target_absolute_cap - current, _ZERO)
-    return max(current + target_absolute_cap, _ZERO)
+        return max(
+            exact_subtract(target_absolute_cap, current),
+            _ZERO,
+        )
+    return max(exact_add(current, target_absolute_cap), _ZERO)
 
 
 def _lot_quantity(
@@ -365,14 +369,15 @@ def _lot_quantity(
     price: Decimal,
     lot_size: Decimal,
 ) -> Decimal:
-    try:
-        with decimal_context((notional, price, lot_size)):
-            lots = (
-                notional / (price * lot_size)
-            ).to_integral_value(rounding=ROUND_DOWN)
-            return max(lots, _ZERO) * lot_size
-    except DecimalException:
-        return _ZERO
+    with decimal_context(
+        (notional, price, lot_size)
+    ) as arithmetic:
+        arithmetic.rounding = ROUND_DOWN
+        raw_quantity = notional / price
+        lots = (raw_quantity / lot_size).to_integral_value(
+            rounding=ROUND_DOWN
+        )
+    return exact_multiply(max(lots, _ZERO), lot_size)
 
 
 def _rejection(
@@ -390,11 +395,7 @@ def _rejection(
 
 
 def _aligned(value: Decimal, increment: Decimal) -> bool:
-    try:
-        with decimal_context((value, increment)):
-            return value % increment == _ZERO
-    except DecimalException:
-        return False
+    return is_aligned(value, increment)
 
 
 def _risk_arithmetic_values(
