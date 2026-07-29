@@ -5,7 +5,7 @@ import json
 import os
 import subprocess
 import sys
-from decimal import MIN_EMIN, Decimal
+from decimal import MAX_EMAX, MIN_EMIN, Decimal
 from pathlib import Path
 
 import pytest
@@ -205,6 +205,59 @@ try:
                 current,
             )
         )
+    elif case == "mixed_aligned_sizing":
+        item, current = context(
+            cash=HUGE,
+            price=Decimal("1"),
+            tick=Decimal("1"),
+            lot=SMALL,
+        )
+        result = DefaultOrderSizer().size(
+            TargetWeight(
+                instrument=item.id,
+                weight=Decimal("1"),
+                reason=DecisionReason.of("mixed_aligned_sizing"),
+            ),
+            current,
+        )
+        if isinstance(result, OrderRejected):
+            payload = {
+                "kind": "sizing_rejection",
+                "code": result.reason.code,
+            }
+        else:
+            payload = {
+                "kind": "order",
+                "side": result.side.value,
+                "quantity": str(result.quantity.value),
+            }
+    elif case == "mixed_aligned_risk":
+        item, current = context(
+            cash=HUGE,
+            price=Decimal("1"),
+            tick=Decimal("1"),
+            lot=SMALL,
+        )
+        policy = LongShortRisk(
+            max_leverage=Decimal("1"),
+            max_position_weight=Decimal("1"),
+            allow_short=True,
+        )
+        payload = {
+            "kind": "mixed_risk",
+            "buy": risk_payload(
+                policy.evaluate(
+                    order(item, side=OrderSide.BUY, quantity=HUGE),
+                    current,
+                )
+            ),
+            "sell": risk_payload(
+                policy.evaluate(
+                    order(item, side=OrderSide.SELL, quantity=HUGE),
+                    current,
+                )
+            ),
+        }
     else:
         raise AssertionError(f"unknown boundary case: {case}")
 except BaseException as error:
@@ -273,3 +326,27 @@ def test_inherently_unrepresentable_cap_is_a_typed_rejection():
     assert payload["status"] == "rejected"
     assert Decimal(str(payload["final_quantity"])) == Decimal("0")
     assert payload["codes"] == ["invalid_risk_arithmetic"]
+
+
+def test_mixed_max_min_aligned_weight_sizing_uses_compact_raw_quantity():
+    payload = _run_boundary_case("mixed_aligned_sizing")
+
+    assert payload["kind"] == "order"
+    assert payload["side"] == "buy"
+    assert Decimal(str(payload["quantity"])) == Decimal(
+        f"1E+{MAX_EMAX - 2}"
+    )
+
+
+def test_mixed_max_min_aligned_loose_risk_caps_pass_both_directions():
+    payload = _run_boundary_case("mixed_aligned_risk")
+
+    assert payload["kind"] == "mixed_risk"
+    for side in ("buy", "sell"):
+        decision = payload[side]
+        assert isinstance(decision, dict)
+        assert decision["status"] == "passed"
+        assert Decimal(str(decision["final_quantity"])) == Decimal(
+            f"1E+{MAX_EMAX - 2}"
+        )
+        assert decision["codes"] == []
