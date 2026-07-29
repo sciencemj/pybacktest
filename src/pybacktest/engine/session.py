@@ -237,11 +237,29 @@ class StepResult:
         object.__setattr__(self, "events", events)
 
 
+def _run_namespace(run_id: RunId) -> UUID:
+    """Return the UUID5 namespace derived from one run identity."""
+    return UUID(run_id.value.removeprefix("run_"))
+
+
+def _derive_fill_id(namespace: UUID, sequence: int) -> FillId:
+    """Derive one fill identity from a run namespace and a fill ordinal."""
+    if (
+        isinstance(sequence, bool)
+        or not isinstance(sequence, int)
+        or sequence < 0
+    ):
+        raise ConfigurationError(
+            "fill sequence must be a nonnegative integer."
+        )
+    return FillId.parse(f"fill_{uuid5(namespace, f'fill:{sequence}').hex}")
+
+
 class _RunIdSequence:
     """Run-namespaced UUID5 identities with independent kind counters."""
 
     def __init__(self, run_id: RunId) -> None:
-        self._namespace = UUID(run_id.value.removeprefix("run_"))
+        self._namespace = _run_namespace(run_id)
         self._order_counter = 0
 
     def next_order_id(self) -> OrderId:
@@ -253,32 +271,26 @@ class _RunIdSequence:
         return OrderId.parse(f"order_{value.hex}")
 
     def fill_id(self, sequence: int) -> FillId:
-        if (
-            isinstance(sequence, bool)
-            or not isinstance(sequence, int)
-            or sequence < 0
-        ):
-            raise ConfigurationError(
-                "fill sequence must be a nonnegative integer."
-            )
-        value = uuid5(self._namespace, f"fill:{sequence}")
-        return FillId.parse(f"fill_{value.hex}")
+        return _derive_fill_id(self._namespace, sequence)
 
 
 class _FillIdFacade:
-    """Expose only ``fill_id`` from the run's identity sequence.
+    """Derive fill identities from the run namespace and nothing else.
 
-    Handing the broker the whole :class:`_RunIdSequence` would also hand it
-    ``next_order_id()``, letting an adapter advance the engine's own order
-    counter. The broker gets this narrowed capability instead.
+    The broker must never reach the engine's order-ID allocator, so this
+    facade retains only the immutable run namespace — not the
+    :class:`_RunIdSequence` that owns ``next_order_id()`` and its mutable
+    counter. Fill identities stay bit-identical to the sequence's own.
     """
 
-    def __init__(self, sequence: _RunIdSequence) -> None:
-        self._sequence = sequence
+    __slots__ = ("_namespace",)
+
+    def __init__(self, run_id: RunId) -> None:
+        self._namespace = _run_namespace(run_id)
 
     def fill_id(self, sequence: int) -> FillId:
         """Return the run-scoped identity for one committed fill ordinal."""
-        return self._sequence.fill_id(sequence)
+        return _derive_fill_id(self._namespace, sequence)
 
 
 class _FixedDatasetSessionBoundary:
@@ -424,6 +436,7 @@ class SimulationSession:
         self._id_sequence: _RunIdSequence | None = None
         self._rng: np.random.Generator | None = None
         self._broker: Broker | None = None
+        self._session_boundary: _FixedDatasetSessionBoundary | None = None
         self._ledger: PortfolioLedger | None = None
         self._recorder: RunRecorder | None = None
         self._index = -1
@@ -481,14 +494,12 @@ class SimulationSession:
             dataset,
         )
         id_sequence = _RunIdSequence(self._run_id)
+        session_boundary = _FixedDatasetSessionBoundary(dataset, calendar)
         broker = self._broker_factory.create(
             BrokerRunContext(
                 instruments=dataset.instruments,
-                session_boundary=_FixedDatasetSessionBoundary(
-                    dataset,
-                    calendar,
-                ),
-                fill_ids=_FillIdFacade(id_sequence),
+                session_boundary=session_boundary,
+                fill_ids=_FillIdFacade(self._run_id),
             )
         )
         if not isinstance(broker, Broker):
@@ -525,6 +536,7 @@ class SimulationSession:
         self._id_sequence = id_sequence
         self._rng = np.random.default_rng(self._simulation.seed)
         self._broker = broker
+        self._session_boundary = session_boundary
         self._ledger = ledger
         self._recorder = recorder
         self._submitted_orders = {}
@@ -561,6 +573,7 @@ class SimulationSession:
         self._id_sequence = None
         self._rng = None
         self._broker = None
+        self._session_boundary = None
         self._ledger = None
         self._recorder = None
         self._index = -1
@@ -771,7 +784,7 @@ class SimulationSession:
             order_id=order_id,
             submitted_at=timestamp,
             active_from=active_from,
-            active_orders=self._active_orders(),
+            active_orders=self._engine_active_orders(),
         )
         sized = self._order_sizer.size(intent, context)
         if not isinstance(
@@ -982,14 +995,25 @@ class SimulationSession:
                 "broker events must be a sequence.",
                 code="invalid_broker_events",
             )
+        # Snapshot the adapter's sequence exactly once. Everything after this
+        # line reads the immutable copy, so a Sequence that serves different
+        # events on a later traversal cannot substitute anything past
+        # validation.
+        try:
+            events = tuple(broker_events)
+        except Exception as exc:
+            raise AdapterContractError(
+                "broker events could not be read as a fixed sequence.",
+                code="invalid_broker_events",
+            ) from exc
         predicted = self._validate_broker_events(
-            broker_events,
+            events,
             at=at,
             origin=origin,
             cancelled_order_id=cancelled_order_id,
         )
         self._require_broker_state_agreement(predicted)
-        return self._record_broker_events(broker_events)
+        return self._record_broker_events(events)
 
     def _validate_broker_events(
         self,
@@ -1010,6 +1034,8 @@ class SimulationSession:
             broker_events,
             origin=origin,
             cancelled_order_id=cancelled_order_id,
+            at=at,
+            session_boundary=self._session_boundary,
         )
         staged = dict(self._submitted_orders)
         staged_ordinal = self._fill_ordinal
@@ -1324,8 +1350,26 @@ class SimulationSession:
             timestamp=market.timestamp,
             market=market,
             portfolio=snapshot,
-            active_orders=self._active_orders(),
+            active_orders=self._engine_active_orders(),
             features=feature_set.view(market.timestamp),
+        )
+
+    def _engine_active_orders(self) -> tuple[Order, ...]:
+        """Return active orders from the engine's own validated registry.
+
+        The broker's ``active_orders`` has already been reconciled against
+        this registry by :meth:`_require_broker_state_agreement`. Reading the
+        adapter again here would reopen that gap, so observations and risk
+        reservations are served from engine-owned state in submission order.
+        """
+        return tuple(
+            order
+            for order in self._submitted_orders.values()
+            if order.status
+            in {
+                OrderStatus.ACCEPTED,
+                OrderStatus.PARTIALLY_FILLED,
+            }
         )
 
     def _active_orders(self) -> tuple[Order, ...]:
@@ -1581,10 +1625,12 @@ def _component_fingerprint(*components: object) -> str:
         )
         return _fingerprint(descriptors)
     except Exception as exc:
-        if (
-            isinstance(exc, ConfigurationError)
-            and exc.code == "unsupported_component_state"
-        ):
+        if isinstance(exc, ConfigurationError) and exc.code in {
+            "unsupported_component_state",
+            "duplicate_slot_name",
+            "ambiguous_instance_state",
+            "unsupported_instance_state",
+        }:
             raise
         raise ConfigurationError(
             "engine component contains unsupported deterministic state.",
@@ -1708,14 +1754,17 @@ def _require_broker_call_origin(
     *,
     origin: _BrokerCallOrigin,
     cancelled_order_id: OrderId | None,
+    at: datetime,
+    session_boundary: _FixedDatasetSessionBoundary | None,
 ) -> None:
     """Reject events the engine's specific broker call cannot produce.
 
     Every order the engine submits becomes active only at a later
     timestamp, so ``submit()`` has nothing to report. ``cancel()`` answers
     for exactly the order it was given. ``process()`` may execute and may
-    end a DAY session, but it may not cancel, and it may not expire an
-    order that carries no DAY instruction.
+    end a DAY session — but the engine owns the session calendar, so an
+    expiry is legitimate only when its own boundary agrees the DAY session
+    has ended at this timestamp.
     """
     if origin is _BrokerCallOrigin.SUBMIT:
         if broker_events:
@@ -1752,13 +1801,21 @@ def _require_broker_call_origin(
                 "requests cancellation.",
                 code="invalid_broker_event_origin",
             )
-        if (
-            isinstance(event, OrderExpiredEvent)
-            and event.order.time_in_force is not TimeInForce.DAY
-        ):
+        if not isinstance(event, OrderExpiredEvent):
+            continue
+        if event.order.time_in_force is not TimeInForce.DAY:
             raise AdapterContractError(
                 "broker process() expired an order that carries no DAY "
                 "time-in-force instruction.",
+                code="invalid_broker_event_origin",
+            )
+        if session_boundary is None or not session_boundary.day_order_expired(
+            event.order,
+            at,
+        ):
+            raise AdapterContractError(
+                "broker process() expired a DAY order whose session has not "
+                "ended on the engine-owned calendar.",
                 code="invalid_broker_event_origin",
             )
 

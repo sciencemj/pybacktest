@@ -148,16 +148,60 @@ def python_strategy_provenance(
     )
 
 
+def _is_behavioral(klass: type) -> bool:
+    """Decide whether a base class carries the strategy's own behaviour.
+
+    ``object`` and anything shipped by this library or the standard library
+    is framework scaffolding: including it would make every fingerprint move
+    when an unrelated internal changes, while excluding a user's own base
+    class would let two different implementations collide.
+    """
+    if klass is object:
+        return False
+    module = getattr(klass, "__module__", "")
+    root = module.partition(".")[0]
+    if root in {"builtins", "abc", "typing", "dataclasses", "enum"}:
+        return False
+    return root != "pybacktest"
+
+
+def _implementation_descriptor(
+    strategy_type: type,
+) -> tuple[dict[str, str], ...]:
+    """Digest each behaviour-carrying class in the strategy's own MRO.
+
+    Hashing only ``type(strategy)`` misses ``build_features``/``on_bar``
+    implementations that live on a user base class, so two subclasses whose
+    inherited behaviour differs would share one fingerprint. MRO order is
+    deterministic, so the descriptor is stable across runs.
+    """
+    entries: list[dict[str, str]] = []
+    for index, klass in enumerate(strategy_type.__mro__):
+        # The strategy's own type always counts, whatever module it claims;
+        # only inherited bases are filtered for framework scaffolding.
+        if index > 0 and not _is_behavioral(klass):
+            continue
+        try:
+            source = inspect.getsource(klass)
+        except (OSError, TypeError) as exc:
+            raise ConfigurationError(
+                "strategy implementation source is unavailable for "
+                f"{klass.__qualname__}; supply an explicit "
+                "ProvenanceDescriptor instead.",
+                code="untrusted_strategy_provenance",
+            ) from exc
+        entries.append(
+            {
+                "module": getattr(klass, "__module__", ""),
+                "qualname": klass.__qualname__,
+                "source": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+            }
+        )
+    return tuple(entries)
+
+
 def _implementation_digest(strategy_type: type) -> str:
-    try:
-        source = inspect.getsource(strategy_type)
-    except (OSError, TypeError) as exc:
-        raise ConfigurationError(
-            "strategy implementation source is unavailable; supply an "
-            "explicit ProvenanceDescriptor instead.",
-            code="untrusted_strategy_provenance",
-        ) from exc
-    return hashlib.sha256(source.encode("utf-8")).hexdigest()
+    return _digest(_implementation_descriptor(strategy_type))
 
 
 def _package_identity(strategy_type: type) -> dict[str, str]:

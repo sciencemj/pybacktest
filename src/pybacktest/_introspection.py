@@ -43,12 +43,24 @@ def deterministic_instance_state(value: object) -> dict[str, object]:
     configuration, and are ignored.
     """
     state: dict[str, object] = dict(vars(value)) if hasattr(value, "__dict__") else {}
-    seen: set[str] = set()
+    seen: dict[str, type] = {}
     for klass in type(value).__mro__:
         for slot in _declared_slots(klass):
-            if slot in _PSEUDO_SLOTS or slot in seen:
+            if slot in _PSEUDO_SLOTS:
                 continue
-            seen.add(slot)
+            declarer = seen.get(slot)
+            if declarer is not None:
+                # Re-declaring a real slot name creates a second descriptor
+                # that shadows the base one, so the base value is live state
+                # that no attribute read can reach. Skipping it would hide
+                # configuration, so refuse the instance instead of guessing.
+                raise ConfigurationError(
+                    f"slot {slot!r} is declared by both "
+                    f"{declarer.__qualname__} and {klass.__qualname__}; "
+                    "the shadowed value cannot be captured unambiguously.",
+                    code="duplicate_slot_name",
+                )
+            seen[slot] = klass
             if not hasattr(value, slot):
                 continue
             slotted = getattr(value, slot)

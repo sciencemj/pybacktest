@@ -250,7 +250,15 @@ class Broker(Protocol):
         raise NotImplementedError
 
     def submit(self, order: Order) -> Sequence[BrokerEvent]:
-        """Submit an already accepted or partially filled order."""
+        """Submit an already accepted or partially filled order.
+
+        Under the next-bar engine this must return an empty sequence.
+        Acceptance is engine-owned and the order does not become active
+        until a later timestamp, so there is nothing for the broker to
+        report yet; any event here is rejected as
+        ``invalid_broker_event_origin``. Execution is reported from
+        :meth:`process` once the order's ``active_from`` timestamp arrives.
+        """
         raise NotImplementedError
 
     def cancel(

@@ -1,9 +1,11 @@
 """Public provenance and component-fingerprint contracts for Task 10."""
 
+import inspect
 from dataclasses import FrozenInstanceError, dataclass, replace
 
 import pytest
 
+from pybacktest._introspection import deterministic_instance_state
 from pybacktest.adapters.broker import (
     IntrabarPolicy,
     NextBarOpenFill,
@@ -188,6 +190,149 @@ def test_inherited_mutable_counter_fails_the_component_gate() -> None:
         )
 
     assert raised.value.code == "unsupported_component_state"
+
+
+class _DuplicateSlotBase:
+    __slots__ = ("threshold",)
+
+    def __init__(self, base_threshold: int) -> None:
+        _DuplicateSlotBase.threshold.__set__(self, base_threshold)
+
+
+class _DuplicateSlotStrategy(_DuplicateSlotBase):
+    """Re-declares a real slot name, so two distinct descriptors exist."""
+
+    __slots__ = ("threshold",)
+
+    def __init__(self, base_threshold: int, own_threshold: int) -> None:
+        super().__init__(base_threshold)
+        self.threshold = own_threshold
+
+    def build_features(self, builder: FeatureBuilder) -> FeaturePlan:
+        return builder.plan()
+
+    def on_bar(
+        self,
+        context: StrategyContext,
+        market: MarketSlice,
+    ) -> tuple:
+        del context, market
+        return ()
+
+
+def test_duplicate_mro_slot_names_are_handled_deterministically() -> None:
+    plan = FeatureBuilder().plan()
+
+    try:
+        low = python_strategy_provenance(
+            _DuplicateSlotStrategy(1, 7),
+            plan,
+        )
+        high = python_strategy_provenance(
+            _DuplicateSlotStrategy(999, 7),
+            plan,
+        )
+    except ConfigurationError as error:
+        assert error.code == "duplicate_slot_name"
+        return
+
+    assert low.strategy_fingerprint != high.strategy_fingerprint
+
+
+class _DuplicateSlotFactoryBase:
+    __slots__ = ("creates",)
+
+    def __init__(self, base_creates: int) -> None:
+        _DuplicateSlotFactoryBase.creates.__set__(self, base_creates)
+
+
+class _DuplicateSlotBrokerFactory(_DuplicateSlotFactoryBase):
+    __slots__ = ("creates",)
+
+    def __init__(self, base_creates: int) -> None:
+        super().__init__(base_creates)
+        self.creates = 0
+
+    def create(self, run_context):
+        self.creates += 1
+        return _base_broker_factory().create(run_context)
+
+
+def test_duplicate_mro_slot_component_state_is_rejected() -> None:
+    with pytest.raises(ConfigurationError) as raised:
+        deterministic_instance_state(_DuplicateSlotBrokerFactory(1))
+    assert raised.value.code == "duplicate_slot_name"
+
+    engine, dataset = _engine_with(_DuplicateSlotBrokerFactory(1))
+    with pytest.raises(ConfigurationError) as run_raised:
+        engine.run(
+            BacktestRequest(
+                strategy=_BuyWhenFlat(Quantity.of("1")),
+                simulation=_simulation(dataset),
+            )
+        )
+    assert run_raised.value.code == "duplicate_slot_name"
+
+
+def test_ordinary_inherited_slots_still_resolve_without_rejection() -> None:
+    state = deterministic_instance_state(_SlottedConfigStrategy(11))
+
+    assert state == {"threshold": 11}
+
+
+class _InheritedBehaviorBase:
+    """Holds the behaviour; the concrete strategy adds nothing of its own."""
+
+    def build_features(self, builder: FeatureBuilder) -> FeaturePlan:
+        return builder.plan()
+
+    def on_bar(
+        self,
+        context: StrategyContext,
+        market: MarketSlice,
+    ) -> tuple:
+        del context, market
+        return ()
+
+
+class _InheritsBehavior(_InheritedBehaviorBase):
+    pass
+
+
+def test_inherited_behavior_source_reaches_the_strategy_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Changing only an inherited base's source must change the fingerprint.
+
+    The concrete class body is untouched, so a digest that hashes only
+    ``type(strategy)`` cannot tell these two runs apart.
+    """
+    plan = FeatureBuilder().plan()
+    strategy = _InheritsBehavior()
+    baseline = python_strategy_provenance(strategy, plan)
+
+    real_getsource = inspect.getsource
+
+    def patched(obj):
+        if obj is _InheritedBehaviorBase:
+            return real_getsource(obj) + "\n# inherited behaviour changed\n"
+        return real_getsource(obj)
+
+    monkeypatch.setattr(provenance_module.inspect, "getsource", patched)
+    mutated = python_strategy_provenance(strategy, plan)
+
+    assert mutated.strategy_identity == baseline.strategy_identity
+    assert mutated.strategy_fingerprint != baseline.strategy_fingerprint
+
+
+def test_implementation_descriptor_excludes_framework_internals() -> None:
+    descriptor = provenance_module._implementation_descriptor(_InheritsBehavior)
+
+    qualnames = [entry["qualname"] for entry in descriptor]
+    assert "_InheritsBehavior" in qualnames
+    assert "_InheritedBehaviorBase" in qualnames
+    assert "object" not in qualnames
+    assert all(not entry["module"].startswith("pybacktest.") for entry in descriptor)
 
 
 def _source_less_strategy() -> object:

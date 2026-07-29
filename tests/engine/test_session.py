@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -47,9 +48,11 @@ from pybacktest.engine import BacktestEngine, SessionStateError
 from pybacktest.engine.session import (
     _as_datetime,
     _FixedDatasetSessionBoundary,
+    _RunIdSequence,
 )
 from pybacktest.ports.broker import (
     BrokerRunContext,
+    FillIdSource,
     OrderCancelledEvent,
     OrderExpiredEvent,
     OrderFilledEvent,
@@ -1077,6 +1080,269 @@ def test_process_may_not_cancel_or_expire_a_gtc_order(broker_type) -> None:
     assert raised.value.code == "invalid_broker_event_origin"
 
 
+class _ShapeShiftingBatch(Sequence):
+    """Serve benign events for N element reads, then a side-flipped batch."""
+
+    def __init__(self, events, swap_after: int) -> None:
+        self._events = tuple(events)
+        self._swapped = tuple(
+            replace(
+                event,
+                fill=replace(
+                    event.fill,
+                    side=(
+                        OrderSide.SELL
+                        if event.fill.side is OrderSide.BUY
+                        else OrderSide.BUY
+                    ),
+                ),
+            )
+            for event in self._events
+        )
+        self._swap_after = swap_after
+        self.reads = 0
+        self.traversals = 0
+
+    def __len__(self) -> int:
+        return len(self._events)
+
+    def __getitem__(self, index):
+        if index == 0:
+            self.traversals += 1
+        current = (
+            self._swapped if self.reads >= self._swap_after else self._events
+        )
+        self.reads += 1
+        return current[index]
+
+
+class _ShapeShiftingBroker(_TamperingBroker):
+    swap_after = 0
+
+    def __init__(self, inner, factory) -> None:
+        super().__init__(inner, factory)
+        self.batches: list[_ShapeShiftingBatch] = []
+
+    def process(self, market: MarketSlice, rng):
+        events = tuple(self._inner.process(market, rng))
+        if not events:
+            return events
+        batch = _ShapeShiftingBatch(events, self.swap_after)
+        self.batches.append(batch)
+        return batch
+
+
+def _shape_shifting_session(swap_after: int):
+    class _Factory(_TamperingBrokerFactory):
+        def __init__(self) -> None:
+            self.broker = None
+
+        def component_descriptor(self) -> ComponentDescriptor:
+            return ComponentDescriptor(
+                identity="tests.shape_shifting_factory",
+                version="1",
+                configuration={},
+            )
+
+        def create(self, run_context: BrokerRunContext):
+            self.broker = _ShapeShiftingBroker(
+                _broker_factory().create(run_context),
+                self,
+            )
+            self.broker.swap_after = swap_after
+            return self.broker
+
+    factory = _Factory()
+    return _session(dataset=_three_bar_dataset(), broker_factory=factory), factory
+
+
+def test_shape_shifting_batch_is_rejected_when_it_lies_immediately() -> None:
+    session, _ = _shape_shifting_session(0)
+    observation = session.reset()
+    before = _engine_owned_state(session)
+
+    with pytest.raises(AdapterContractError) as raised:
+        session.advance((_buy(observation),), observation=observation)
+
+    assert raised.value.code == "invalid_broker_order_state"
+    after = _engine_owned_state(session)
+    assert after["fill_ordinal"] == before["fill_ordinal"]
+    assert after["recorder_fills"] == before["recorder_fills"]
+    assert after["ledger_cash"] == before["ledger_cash"]
+    assert after["ledger_positions"] == before["ledger_positions"]
+    assert not [
+        order
+        for order in after["recorder_orders"].values()
+        if order.status
+        in {
+            OrderStatus.PARTIALLY_FILLED,
+            OrderStatus.FILLED,
+            OrderStatus.CANCELLED,
+        }
+    ]
+
+
+@pytest.mark.parametrize("swap_after", [1, 2, 3], ids=("one", "two", "three"))
+def test_batch_read_once_makes_later_substitution_unreachable(
+    swap_after: int,
+) -> None:
+    """The engine must act on one snapshot, never on a re-read of the adapter.
+
+    A batch that turns malicious only after the engine's first element read
+    can no longer influence anything: the engine reads each element exactly
+    once and acts on that snapshot alone.
+    """
+    session, factory = _shape_shifting_session(swap_after)
+    observation = session.reset()
+
+    step = session.advance((_buy(observation),), observation=observation)
+
+    assert step.observation is not None
+    second = session.advance((), observation=step.observation)
+    assert second.observation is not None
+    session.advance((), observation=second.observation)
+    result = session.result()
+
+    assert [fill.side for fill in result.fills] == [OrderSide.BUY]
+    assert result.orders[0].status is OrderStatus.FILLED
+    assert factory.broker.batches
+    assert [batch.traversals for batch in factory.broker.batches] == [
+        1 for _ in factory.broker.batches
+    ]
+
+
+class _EarlyDayExpiryBroker(_TamperingBroker):
+    """Expire a resting DAY order on its own anchor bar, consistently."""
+
+    def __init__(self, inner, factory) -> None:
+        super().__init__(inner, factory)
+        self._expired: dict[OrderId, Order] = {}
+
+    @property
+    def active_orders(self):
+        current = dict(self._inner.active_orders)
+        for order_id in self._expired:
+            current.pop(order_id, None)
+        return MappingProxyType(current)
+
+    def process(self, market: MarketSlice, rng):
+        events = tuple(self._inner.process(market, rng))
+        active = tuple(self._inner.active_orders.values())
+        if events or not active:
+            return events
+        order = active[0]
+        expired = order.cancel("premature day expiry")
+        self._expired[order.id] = expired
+        return (
+            OrderExpiredEvent(
+                order=expired,
+                timestamp=_as_datetime(market.timestamp),
+                message="premature day expiry",
+            ),
+        )
+
+
+def test_process_may_not_expire_a_day_order_before_its_session_ends() -> None:
+    session = _session(
+        dataset=_three_bar_dataset(),
+        broker_factory=_origin_factory(_EarlyDayExpiryBroker),
+    )
+    first = session.reset()
+    resting = replace(
+        _resting_limit(first),
+        time_in_force=TimeInForce.DAY,
+        reason=DecisionReason.of("resting_day"),
+    )
+
+    with pytest.raises(AdapterContractError) as raised:
+        session.advance((resting,), observation=first)
+
+    assert raised.value.code == "invalid_broker_event_origin"
+
+
+def test_legitimate_day_expiry_still_passes_origin_validation() -> None:
+    session = _session(dataset=_three_bar_dataset())
+    first = session.reset()
+    resting = replace(
+        _resting_limit(first),
+        time_in_force=TimeInForce.DAY,
+        reason=DecisionReason.of("resting_day"),
+    )
+
+    step = session.advance((resting,), observation=first)
+    assert step.observation is not None
+    expired = session.advance((), observation=step.observation)
+
+    assert expired.observation is not None
+    assert expired.observation.active_orders == ()
+    session.advance((), observation=expired.observation)
+    result = session.result()
+    assert result.orders[0].status is OrderStatus.CANCELLED
+    assert "order.expired" in {event.code.value for event in result.events}
+
+
+_PHANTOM_ORDER_ID = OrderId.parse("order_" + "b" * 32)
+
+
+class _PhantomOnLaterReadBroker(_TamperingBroker):
+    """Inject a phantom active order from a configured property read on."""
+
+    inject_from = 1
+
+    def __init__(self, inner, factory) -> None:
+        super().__init__(inner, factory)
+        self.reads = 0
+
+    @property
+    def active_orders(self):
+        self.reads += 1
+        current = dict(self._inner.active_orders)
+        if self.reads >= self.inject_from and current:
+            genuine = next(iter(current.values()))
+            current[_PHANTOM_ORDER_ID] = replace(
+                genuine,
+                id=_PHANTOM_ORDER_ID,
+                quantity=Quantity.of("99"),
+            )
+        return MappingProxyType(current)
+
+
+@pytest.mark.parametrize("inject_from", [1, 2, 3, 4, 5, 6, 7, 8])
+def test_phantom_active_order_cannot_enter_an_observation(
+    inject_from: int,
+) -> None:
+    """No adapter read may put an order the engine never submitted into an
+    Observation, whichever read the adapter chooses to lie on."""
+
+    class _Factory(_TamperingBrokerFactory):
+        def create(self, run_context: BrokerRunContext):
+            broker = _PhantomOnLaterReadBroker(
+                _broker_factory().create(run_context),
+                self,
+            )
+            broker.inject_from = inject_from
+            return broker
+
+    session = _session(dataset=_three_bar_dataset(), broker_factory=_Factory())
+    observations = []
+    try:
+        first = session.reset()
+        observations.append(first)
+        step = session.advance((_resting_limit(first),), observation=first)
+        if step.observation is not None:
+            observations.append(step.observation)
+    except AdapterContractError as error:
+        assert error.code in {
+            "broker_state_disagreement",
+            "invalid_active_orders",
+        }
+
+    for observation in observations:
+        assert _PHANTOM_ORDER_ID not in {
+            order.id for order in observation.active_orders
+        }
+
+
 class _FalsyRejectingSizer:
     def __bool__(self) -> bool:
         return False
@@ -1505,6 +1771,41 @@ def test_broker_receives_only_a_narrowed_fill_id_capability() -> None:
     assert str(fill_ids.fill_id(0)).startswith("fill_")
     assert fill_ids.fill_id(0) == fill_ids.fill_id(0)
     assert fill_ids.fill_id(0) != fill_ids.fill_id(1)
+
+
+def _reachable_state(value) -> list[object]:
+    """Every object the facade retains, via __dict__ and every MRO slot."""
+    retained: list[object] = list(vars(value).values()) if hasattr(
+        value, "__dict__"
+    ) else []
+    for klass in type(value).__mro__:
+        declared = klass.__dict__.get("__slots__", ())
+        if isinstance(declared, str):
+            declared = (declared,)
+        for slot in declared:
+            if slot not in {"__dict__", "__weakref__"} and hasattr(
+                value, slot
+            ):
+                retained.append(getattr(value, slot))
+    return retained
+
+
+def test_fill_id_facade_retains_no_order_id_allocator() -> None:
+    factory = _RunContextRecordingFactory()
+    session = _session(broker_factory=factory)
+
+    session.reset()
+
+    fill_ids = factory.run_context.fill_ids
+    retained = _reachable_state(fill_ids)
+    assert retained, "the facade must retain the data it derives IDs from"
+    for item in retained:
+        assert not hasattr(item, "next_order_id"), item
+        assert not isinstance(item, _RunIdSequence), item
+    assert isinstance(fill_ids, FillIdSource)
+    assert fill_ids.fill_id(3) == _RunIdSequence(
+        RunId.parse("run_" + "2" * 32)
+    ).fill_id(3)
 
 
 class _ForeignActiveOrderBroker(_TamperingBroker):
