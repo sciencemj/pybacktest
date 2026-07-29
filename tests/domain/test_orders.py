@@ -574,3 +574,39 @@ def test_events_fix_codes_and_disallow_mismatched_code_override():
 def test_event_constructors_enforce_shared_invariants(construct):
     with pytest.raises(ConfigurationError):
         construct()
+
+
+@pytest.mark.parametrize(
+    ("construct", "field"),
+    [
+        (lambda: DataUnavailable("XNAS:AAPL", NOW), "instrument"),
+        (
+            lambda: PartialFill(
+                OrderId.new(),
+                FillId.new(),
+                AAPL,
+                "buy",
+                Quantity.of("1"),
+                NOW,
+            ),
+            "side",
+        ),
+        (lambda: DecisionTraceEntry(AAPL, "ma_cross", NOW), "reason"),
+        (
+            lambda: OrderAdjusted(
+                OrderId.new(),
+                AAPL,
+                Quantity.of("1"),
+                Quantity.of("0"),
+                NOW,
+            ),
+            "adjusted_quantity",
+        ),
+    ],
+)
+def test_event_constructors_reject_remaining_typed_field_mutations(
+    construct,
+    field: str,
+):
+    with pytest.raises(ConfigurationError, match=field):
+        construct()
