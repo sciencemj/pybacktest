@@ -2,11 +2,16 @@
 
 from collections.abc import Mapping
 from datetime import datetime
-from decimal import Decimal, DecimalException, localcontext
+from decimal import (
+    ROUND_HALF_EVEN,
+    Decimal,
+    DecimalException,
+    localcontext,
+)
 from types import MappingProxyType
 
 from pybacktest.domain.errors import AccountingInvariantError, ConfigurationError
-from pybacktest.domain.identifiers import FillId
+from pybacktest.domain.identifiers import CashEventId, FillId
 from pybacktest.domain.instruments import Instrument, InstrumentId
 from pybacktest.domain.money import Money, Quantity, normalize_currency
 from pybacktest.domain.orders import Fill, OrderSide
@@ -68,6 +73,7 @@ class PortfolioLedger:
         self._total_fees = Money.of(_ZERO, normalized_currency)
         self._timestamp: datetime | None = None
         self._processed_fill_ids: set[FillId] = set()
+        self._processed_cash_event_ids: set[CashEventId] = set()
         self._valuation_prices: dict[InstrumentId, Money] = {}
         self._cash_events: list[CashEvent] = []
 
@@ -84,12 +90,17 @@ class PortfolioLedger:
 
     def apply_fill(self, fill: Fill) -> PortfolioSnapshot:
         """Validate, reconcile, and atomically apply one execution."""
-        self._validate_fill(fill)
+        instrument = self._validate_fill(fill)
         previous = self._positions.get(fill.instrument)
         old_quantity = (
             previous.quantity.value if previous is not None else _ZERO
         )
         old_average = previous.average_price if previous is not None else None
+        old_book_cost = (
+            previous.book_cost
+            if previous is not None
+            else Money.of(_ZERO, self._base_currency)
+        )
         old_realized = (
             previous.realized_pnl
             if previous is not None
@@ -101,33 +112,83 @@ class PortfolioLedger:
             else -fill.quantity.value
         )
 
+        arithmetic_values = (
+            self._cash.amount,
+            self._total_fees.amount,
+            old_quantity,
+            old_book_cost.amount,
+            old_realized.amount,
+            fill.quantity.value,
+            fill.price.amount,
+            fill.fee.amount,
+            instrument.tick_size,
+            instrument.lot_size,
+        )
         try:
-            new_quantity = old_quantity + signed_quantity
-            average_price, realized_delta = _transition_cost_basis(
-                old_quantity=old_quantity,
-                old_average=old_average,
-                signed_fill_quantity=signed_quantity,
-                fill_price=fill.price,
-            )
-            new_realized = Money.of(
-                old_realized.amount + realized_delta,
-                self._base_currency,
-            )
-            new_position = Position(
-                instrument=fill.instrument,
-                quantity=Quantity.of(new_quantity),
-                average_price=average_price,
-                realized_pnl=new_realized,
-            )
-            cash_delta = -(signed_quantity * fill.price.amount) - fill.fee.amount
-            candidate_cash = Money.of(
-                self._cash.amount + cash_delta,
-                self._base_currency,
-            )
-            candidate_fees = Money.of(
-                self._total_fees.amount + fill.fee.amount,
-                self._base_currency,
-            )
+            with localcontext() as context:
+                context.prec = _exact_arithmetic_precision(
+                    arithmetic_values
+                )
+                new_quantity = old_quantity + signed_quantity
+                (
+                    average_price,
+                    new_book_cost_amount,
+                    realized_delta,
+                ) = _transition_book_cost(
+                    old_quantity=old_quantity,
+                    old_average=old_average,
+                    old_book_cost=old_book_cost.amount,
+                    signed_fill_quantity=signed_quantity,
+                    fill_price=fill.price.amount,
+                    price_increment=instrument.tick_size,
+                    book_increment=(
+                        instrument.tick_size * instrument.lot_size
+                    ),
+                )
+                new_realized = Money.of(
+                    old_realized.amount + realized_delta,
+                    self._base_currency,
+                )
+                new_book_cost = Money.of(
+                    new_book_cost_amount,
+                    self._base_currency,
+                )
+                new_position = Position(
+                    instrument=fill.instrument,
+                    quantity=Quantity.of(new_quantity),
+                    average_price=(
+                        None
+                        if average_price is None
+                        else Money.of(
+                            average_price,
+                            self._base_currency,
+                        )
+                    ),
+                    book_cost=new_book_cost,
+                    realized_pnl=new_realized,
+                )
+                cash_delta = (
+                    -(signed_quantity * fill.price.amount)
+                    - fill.fee.amount
+                )
+                candidate_cash = Money.of(
+                    self._cash.amount + cash_delta,
+                    self._base_currency,
+                )
+                candidate_fees = Money.of(
+                    self._total_fees.amount + fill.fee.amount,
+                    self._base_currency,
+                )
+                _reconcile_position_transition(
+                    old_quantity=old_quantity,
+                    new_quantity=new_quantity,
+                    old_book_cost=old_book_cost.amount,
+                    new_book_cost=new_book_cost_amount,
+                    old_realized=old_realized.amount,
+                    new_realized=new_realized.amount,
+                    signed_fill_quantity=signed_quantity,
+                    fill_price=fill.price.amount,
+                )
         except (DecimalException, ConfigurationError) as error:
             raise AccountingInvariantError(
                 "fill arithmetic produced an impossible value."
@@ -176,27 +237,35 @@ class PortfolioLedger:
             raise AccountingInvariantError(
                 "cash event must be a CashEvent."
             )
+        if event.id in self._processed_cash_event_ids:
+            raise AccountingInvariantError(
+                f"duplicate cash event id {event.id}."
+            )
         self._validate_timestamp(event.timestamp)
         if event.amount.currency != self._base_currency:
             raise AccountingInvariantError(
                 "cash event currency must match the base currency."
             )
         try:
-            candidate_cash = Money.of(
-                self._cash.amount + event.amount.amount,
-                self._base_currency,
-            )
+            with localcontext() as context:
+                context.prec = _exact_arithmetic_precision(
+                    (self._cash.amount, event.amount.amount)
+                )
+                candidate_cash = Money.of(
+                    self._cash.amount + event.amount.amount,
+                    self._base_currency,
+                )
+                if (
+                    candidate_cash.amount - self._cash.amount
+                    != event.amount.amount
+                ):
+                    raise AccountingInvariantError(
+                        "cash event delta did not reconcile."
+                    )
         except (DecimalException, ConfigurationError) as error:
             raise AccountingInvariantError(
                 "cash event arithmetic produced an impossible value."
             ) from error
-        if (
-            candidate_cash.amount - self._cash.amount
-            != event.amount.amount
-        ):
-            raise AccountingInvariantError(
-                "cash event delta did not reconcile."
-            )
 
         candidate_events = (*self._cash_events, event)
         candidate_prices = self._prices_at_transition(event.timestamp)
@@ -212,6 +281,7 @@ class PortfolioLedger:
         self._cash = candidate_cash
         self._timestamp = event.timestamp
         self._cash_events.append(event)
+        self._processed_cash_event_ids.add(event.id)
         self._valuation_prices = candidate_prices
         return candidate
 
@@ -342,40 +412,57 @@ class PortfolioLedger:
         cash_events: tuple[CashEvent, ...],
     ) -> PortfolioSnapshot:
         try:
-            realized_amount = sum(
-                (
-                    position.realized_pnl.amount
-                    for position in positions.values()
-                ),
-                _ZERO,
-            )
-            market_value_amount = _ZERO
-            gross_exposure_amount = _ZERO
-            for instrument_id, position in positions.items():
-                quantity = position.quantity.value
-                if quantity == _ZERO:
-                    continue
-                if position.average_price is None:
-                    raise AccountingInvariantError(
-                        "open position is missing average price."
-                    )
-                mark = valuation_prices.get(
-                    instrument_id,
-                    position.average_price,
-                )
-                marked_value = quantity * mark.amount
-                market_value_amount += marked_value
-                gross_exposure_amount += abs(marked_value)
-            equity_amount = cash.amount + market_value_amount
-            reconciliation_values = (
-                equity_amount,
+            arithmetic_values = (
+                cash.amount,
                 self._initial_cash.amount,
                 total_fees.amount,
-                realized_amount,
+                *(
+                    value
+                    for position in positions.values()
+                    for value in (
+                        position.quantity.value,
+                        position.book_cost.amount,
+                        position.realized_pnl.amount,
+                    )
+                ),
+                *(price.amount for price in valuation_prices.values()),
                 *(event.amount.amount for event in cash_events),
             )
             with localcontext() as context:
-                context.prec = _exact_sum_precision(reconciliation_values)
+                context.prec = _exact_arithmetic_precision(
+                    arithmetic_values
+                )
+                realized_amount = sum(
+                    (
+                        position.realized_pnl.amount
+                        for position in positions.values()
+                    ),
+                    _ZERO,
+                )
+                market_value_amount = _ZERO
+                gross_exposure_amount = _ZERO
+                unrealized_amount = _ZERO
+                for instrument_id, position in positions.items():
+                    quantity = position.quantity.value
+                    if quantity == _ZERO:
+                        continue
+                    direction = (
+                        Decimal("1")
+                        if quantity > _ZERO
+                        else Decimal("-1")
+                    )
+                    mark = valuation_prices.get(instrument_id)
+                    if mark is None:
+                        marked_value = direction * position.book_cost.amount
+                    else:
+                        marked_value = quantity * mark.amount
+                    market_value_amount += marked_value
+                    gross_exposure_amount += abs(marked_value)
+                    unrealized_amount += (
+                        marked_value
+                        - direction * position.book_cost.amount
+                    )
+                equity_amount = cash.amount + market_value_amount
                 cash_event_amount = sum(
                     (event.amount.amount for event in cash_events),
                     _ZERO,
@@ -385,9 +472,9 @@ class PortfolioLedger:
                     + cash_event_amount
                     - total_fees.amount
                     + realized_amount
+                    + unrealized_amount
                 )
-                unrealized_amount = equity_amount - accounting_basis
-                if equity_amount != accounting_basis + unrealized_amount:
+                if equity_amount != accounting_basis:
                     raise AccountingInvariantError(
                         "portfolio equity and P&L did not reconcile."
                     )
@@ -425,40 +512,127 @@ class PortfolioLedger:
             ) from error
 
 
-def _transition_cost_basis(
+def _transition_book_cost(
     *,
     old_quantity: Decimal,
     old_average: Money | None,
+    old_book_cost: Decimal,
     signed_fill_quantity: Decimal,
-    fill_price: Money,
-) -> tuple[Money | None, Decimal]:
+    fill_price: Decimal,
+    price_increment: Decimal,
+    book_increment: Decimal,
+) -> tuple[Decimal | None, Decimal, Decimal]:
     new_quantity = old_quantity + signed_fill_quantity
+    fill_notional = abs(signed_fill_quantity) * fill_price
     if old_quantity == _ZERO:
-        return fill_price, _ZERO
+        return fill_price, fill_notional, _ZERO
     if old_average is None:
         raise AccountingInvariantError(
             "open position is missing average price."
         )
     if _same_sign(old_quantity, signed_fill_quantity):
-        weighted_cost = (
-            abs(old_quantity) * old_average.amount
-            + abs(signed_fill_quantity) * fill_price.amount
+        new_book_cost = old_book_cost + fill_notional
+        average_price = _round_to_increment(
+            new_book_cost / abs(new_quantity),
+            price_increment,
         )
-        return (
-            Money.of(weighted_cost / abs(new_quantity), fill_price.currency),
-            _ZERO,
-        )
+        return average_price, new_book_cost, _ZERO
 
     closed_quantity = min(abs(old_quantity), abs(signed_fill_quantity))
     direction = Decimal("1") if old_quantity > _ZERO else Decimal("-1")
-    realized_delta = (
-        fill_price.amount - old_average.amount
-    ) * closed_quantity * direction
+    allocated_book = (
+        old_book_cost
+        if closed_quantity == abs(old_quantity)
+        else _round_to_increment(
+            old_book_cost * closed_quantity / abs(old_quantity),
+            book_increment,
+        )
+    )
+    realized_delta = direction * (
+        closed_quantity * fill_price - allocated_book
+    )
     if new_quantity == _ZERO:
-        return None, realized_delta
+        return None, _ZERO, realized_delta
     if _same_sign(old_quantity, new_quantity):
-        return old_average, realized_delta
-    return fill_price, realized_delta
+        return (
+            old_average.amount,
+            old_book_cost - allocated_book,
+            realized_delta,
+        )
+    return (
+        fill_price,
+        abs(new_quantity) * fill_price,
+        realized_delta,
+    )
+
+
+def _reconcile_position_transition(
+    *,
+    old_quantity: Decimal,
+    new_quantity: Decimal,
+    old_book_cost: Decimal,
+    new_book_cost: Decimal,
+    old_realized: Decimal,
+    new_realized: Decimal,
+    signed_fill_quantity: Decimal,
+    fill_price: Decimal,
+) -> None:
+    fill_notional = abs(signed_fill_quantity) * fill_price
+    realized_delta = new_realized - old_realized
+    if old_quantity == _ZERO or _same_sign(
+        old_quantity,
+        signed_fill_quantity,
+    ):
+        if (
+            new_book_cost - old_book_cost != fill_notional
+            or realized_delta != _ZERO
+        ):
+            raise AccountingInvariantError(
+                "opening fill book cost did not reconcile."
+            )
+        return
+
+    closed_quantity = min(abs(old_quantity), abs(signed_fill_quantity))
+    direction = Decimal("1") if old_quantity > _ZERO else Decimal("-1")
+    if new_quantity == _ZERO or not _same_sign(
+        old_quantity,
+        new_quantity,
+    ):
+        allocated_book = old_book_cost
+    else:
+        allocated_book = old_book_cost - new_book_cost
+    expected_realized = direction * (
+        closed_quantity * fill_price - allocated_book
+    )
+    if realized_delta != expected_realized:
+        raise AccountingInvariantError(
+            "closing fill realized P&L did not reconcile."
+        )
+    if (
+        new_quantity == _ZERO
+        and new_book_cost != _ZERO
+    ):
+        raise AccountingInvariantError(
+            "flat position retained book cost."
+        )
+    if (
+        new_quantity != _ZERO
+        and not _same_sign(old_quantity, new_quantity)
+        and new_book_cost != abs(new_quantity) * fill_price
+    ):
+        raise AccountingInvariantError(
+            "crossed position book cost did not reconcile."
+        )
+
+
+def _round_to_increment(
+    value: Decimal,
+    increment: Decimal,
+) -> Decimal:
+    units = (value / increment).to_integral_value(
+        rounding=ROUND_HALF_EVEN,
+    )
+    return units * increment
 
 
 def _same_sign(left: Decimal, right: Decimal) -> bool:
@@ -481,7 +655,7 @@ def _is_aligned(
         ) from error
 
 
-def _exact_sum_precision(values: tuple[Decimal, ...]) -> int:
+def _exact_arithmetic_precision(values: tuple[Decimal, ...]) -> int:
     nonzero_values = tuple(value for value in values if value != _ZERO)
     if not nonzero_values:
         return 64
@@ -495,5 +669,11 @@ def _exact_sum_precision(values: tuple[Decimal, ...]) -> int:
             )
         exponents.append(exponent)
     lowest_place = min(exponents)
-    carry_digits = len(str(len(nonzero_values))) + 2
-    return max(64, highest_place - lowest_place + carry_digits)
+    operand_digits = sum(
+        len(value.as_tuple().digits) for value in nonzero_values
+    )
+    carry_digits = len(str(len(nonzero_values))) + 4
+    return max(
+        64,
+        highest_place - lowest_place + operand_digits + carry_digits,
+    )

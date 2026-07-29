@@ -73,3 +73,28 @@ class FillId:
 
     def __str__(self) -> str:
         return self.value
+
+
+@dataclass(frozen=True, slots=True)
+class CashEventId:
+    """Canonical identity for an explicit ledger cash event."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        _validate_identifier(
+            self.value,
+            r"cash_event_[0-9a-f]{32}",
+            "CashEventId",
+        )
+
+    @classmethod
+    def new(cls) -> "CashEventId":
+        return cls(f"cash_event_{uuid4().hex}")
+
+    @classmethod
+    def parse(cls, value: str) -> "CashEventId":
+        return cls(value)
+
+    def __str__(self) -> str:
+        return self.value
