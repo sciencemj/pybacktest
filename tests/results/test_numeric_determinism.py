@@ -2,7 +2,16 @@
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from decimal import MAX_EMAX, Context, Decimal, Inexact, localcontext
+from decimal import (
+    MAX_EMAX,
+    Clamped,
+    Context,
+    Decimal,
+    Inexact,
+    Subnormal,
+    Underflow,
+    localcontext,
+)
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -29,6 +38,7 @@ from pybacktest.results.models import (
     MetricName,
     ResultValidationError,
     RunManifest,
+    SummaryMetrics,
 )
 
 _BASE = datetime(2024, 1, 2, 14, 30, tzinfo=UTC)
@@ -143,8 +153,21 @@ def _result_with_order_fills(
 
 def _hostile_context(precision: int) -> Context:
     context = Context(prec=precision)
-    context.traps[Inexact] = True
+    for signal in (Inexact, Underflow, Subnormal, Clamped):
+        context.traps[signal] = True
+        context.flags[signal] = True
     return context
+
+
+def _has_warning(
+    metrics: SummaryMetrics,
+    metric: MetricName,
+    code: str,
+) -> bool:
+    return any(
+        warning.metric is metric and warning.code.value == code
+        for warning in metrics.warnings
+    )
 
 
 def test_backtest_result_fill_aggregation_ignores_hostile_ambient_context() -> None:
@@ -330,6 +353,139 @@ def test_metrics_isolate_beyond_context_range_as_typed_warnings() -> None:
         warning.metric is MetricName.TOTAL_RETURN
         and warning.code.value == "metric.unsupported_numeric_range"
         for warning in metrics.warnings
+    )
+
+
+def test_metric_formula_groups_reject_silent_underflow() -> None:
+    huge = Decimal(f"1e{MAX_EMAX}")
+    tiny = Decimal(f"1e{-MAX_EMAX}")
+
+    metrics = calculate_metrics(
+        equity=(huge, tiny, tiny),
+        fills=(),
+        snapshots=(),
+        config=_CONFIG,
+    )
+
+    for metric in (
+        MetricName.TOTAL_RETURN,
+        MetricName.CAGR,
+        MetricName.MAXIMUM_DRAWDOWN,
+        MetricName.VOLATILITY,
+        MetricName.SHARPE,
+        MetricName.SORTINO,
+    ):
+        assert metrics.result_for(metric).value is None
+        assert _has_warning(
+            metrics,
+            metric,
+            "metric.unsupported_numeric_range",
+        )
+
+
+def test_turnover_rejects_nonzero_value_that_underflows_to_zero() -> None:
+    huge = Decimal(f"1e{MAX_EMAX}")
+    tiny = Decimal(f"1e{-MAX_EMAX}")
+    fill = _fill(1, quantity=tiny, price="1")
+
+    metrics = calculate_metrics(
+        equity=(huge, huge),
+        fills=(fill,),
+        snapshots=(),
+        config=_CONFIG,
+    )
+
+    assert metrics.turnover is None
+    assert _has_warning(
+        metrics,
+        MetricName.TURNOVER,
+        "metric.unsupported_numeric_range",
+    )
+
+
+def test_exposure_metrics_reject_nonzero_values_that_underflow_to_zero() -> None:
+    huge = Decimal(f"1e{MAX_EMAX}")
+    tiny = Decimal(f"1e{-MAX_EMAX}")
+    snapshot = _flat_snapshot("1")
+    object.__setattr__(snapshot, "cash", Money.usd(huge))
+    object.__setattr__(snapshot, "equity", Money.usd(huge))
+    object.__setattr__(snapshot, "gross_exposure", Money.usd(tiny))
+    object.__setattr__(snapshot, "market_value", Money.usd(tiny))
+
+    metrics = calculate_metrics(
+        equity=(huge,),
+        fills=(),
+        snapshots=(snapshot,),
+        config=_CONFIG,
+    )
+
+    for metric in (
+        MetricName.GROSS_EXPOSURE,
+        MetricName.NET_EXPOSURE,
+    ):
+        assert metrics.result_for(metric).value is None
+        assert _has_warning(
+            metrics,
+            metric,
+            "metric.unsupported_numeric_range",
+        )
+
+
+def test_exact_decimal_boundary_and_true_zero_metrics_remain_valid() -> None:
+    huge = Decimal(f"1e{MAX_EMAX}")
+    tiny = Decimal(f"1e{-MAX_EMAX}")
+    boundary = calculate_metrics(
+        equity=("1", "1"),
+        fills=(_fill(1, quantity=tiny, price="1"),),
+        snapshots=(),
+        config=_CONFIG,
+    )
+    true_zero = calculate_metrics(
+        equity=(huge, huge),
+        fills=(),
+        snapshots=(),
+        config=_CONFIG,
+    )
+
+    assert boundary.turnover == tiny
+    assert not _has_warning(
+        boundary,
+        MetricName.TURNOVER,
+        "metric.unsupported_numeric_range",
+    )
+    assert true_zero.total_return == Decimal("0")
+    assert true_zero.turnover == Decimal("0")
+    assert not _has_warning(
+        true_zero,
+        MetricName.TOTAL_RETURN,
+        "metric.unsupported_numeric_range",
+    )
+    assert not _has_warning(
+        true_zero,
+        MetricName.TURNOVER,
+        "metric.unsupported_numeric_range",
+    )
+
+
+def test_win_rate_extreme_exact_input_is_typed_not_raw() -> None:
+    tiny = Decimal(f"1e{-MAX_EMAX}")
+    fills = (
+        _fill(1, quantity="1", price="1"),
+        _fill(2, quantity="1", price=tiny, side=OrderSide.SELL),
+    )
+
+    metrics = calculate_metrics(
+        equity=("1", "1"),
+        fills=fills,
+        snapshots=(),
+        config=_CONFIG,
+    )
+
+    assert metrics.win_rate is None
+    assert _has_warning(
+        metrics,
+        MetricName.WIN_RATE,
+        "metric.unsupported_numeric_range",
     )
 
 

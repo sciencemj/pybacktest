@@ -610,6 +610,50 @@ def _entry_exists(directory_fd: int, name: str) -> bool:
     return True
 
 
+def _verify_committed_location(
+    root: _PinnedRoot,
+    target_name: str,
+    target_identity: tuple[int, int],
+) -> None:
+    _verify_root_identity(root)
+    if not _same_inode_at(root.fd, target_name, target_identity):
+        raise AdapterContractError(
+            "committed artifact no longer has its intended target identity.",
+            code="committed_artifact_location_lost",
+        )
+
+
+def _committed_error(
+    root: _PinnedRoot,
+    target_name: str,
+    target_identity: tuple[int, int],
+    artifact_ref: ArtifactRef,
+) -> ArtifactDurabilityError:
+    try:
+        _verify_committed_location(
+            root,
+            target_name,
+            target_identity,
+        )
+    except (AdapterContractError, OSError):
+        location_lost = True
+        message = (
+            f"artifact publication for {target_name} committed, but the "
+            "intended path no longer identifies the committed artifact."
+        )
+    else:
+        location_lost = False
+        message = (
+            f"artifact for {target_name} was published at its intended path, "
+            "but final durability could not be confirmed."
+        )
+    return ArtifactDurabilityError(
+        message,
+        committed_artifact=artifact_ref,
+        location_lost=location_lost,
+    )
+
+
 def _cleanup_temp(
     root_fd: int,
     temp_fd: int,
@@ -881,30 +925,39 @@ class LocalArtifactStore:
             committed = True
             try:
                 _fsync_directory(root.fd)
-                _verify_root_identity(root)
+                _verify_committed_location(
+                    root,
+                    run_name,
+                    temp_identity,
+                )
                 _remove_lock(root.fd, lock_name, lock_identity)
                 lock_identity = None
                 _fsync_directory(root.fd)
+                _verify_committed_location(
+                    root,
+                    run_name,
+                    temp_identity,
+                )
             except Exception as error:
                 if lock_identity is not None:
                     with suppress(OSError):
                         _remove_lock(root.fd, lock_name, lock_identity)
-                raise ArtifactDurabilityError(
-                    (
-                        f"artifact for {run_name} was published, but final "
-                        "durability could not be confirmed."
-                    ),
-                    artifact_ref=artifact_ref,
+                raise _committed_error(
+                    root,
+                    run_name,
+                    temp_identity,
+                    artifact_ref,
                 ) from error
             return artifact_ref
         except OSError as error:
             if committed and artifact_ref is not None:
-                raise ArtifactDurabilityError(
-                    (
-                        f"artifact for {run_name} was published, but final "
-                        "durability could not be confirmed."
-                    ),
-                    artifact_ref=artifact_ref,
+                if root is None or temp_identity is None:
+                    raise
+                raise _committed_error(
+                    root,
+                    run_name,
+                    temp_identity,
+                    artifact_ref,
                 ) from error
             raise AdapterContractError(
                 f"artifact I/O failed for {run_name}.",

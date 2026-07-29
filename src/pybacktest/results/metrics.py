@@ -4,14 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from decimal import (
-    MAX_EMAX,
-    MIN_EMIN,
-    Context,
-    Decimal,
-    DecimalException,
-    localcontext,
-)
+from decimal import Decimal, DecimalException, localcontext
 from fractions import Fraction
 from itertools import pairwise
 from typing import cast
@@ -279,7 +272,7 @@ def calculate_metrics(
         None,
     )
     warnings: list[RunWarning] = []
-    context = Context(prec=64, Emin=MIN_EMIN, Emax=MAX_EMAX)
+    context = calculation_context()
     with localcontext(context):
         if len(values) < 2:
             for metric in (

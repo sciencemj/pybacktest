@@ -1,9 +1,14 @@
 """Inward artifact persistence port."""
 
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from pybacktest.domain.errors import AdapterContractError
-from pybacktest.results.models import ArtifactRef, BacktestResult
+from pybacktest.results.models import (
+    ArtifactFile,
+    ArtifactManifest,
+    ArtifactRef,
+    BacktestResult,
+)
 
 
 class ArtifactDurabilityError(AdapterContractError):
@@ -13,13 +18,22 @@ class ArtifactDurabilityError(AdapterContractError):
         self,
         message: str,
         *,
-        artifact_ref: ArtifactRef,
+        committed_artifact: ArtifactRef,
+        location_lost: bool,
     ) -> None:
         super().__init__(
             message,
             code="artifact_published_durability_uncertain",
         )
-        self.artifact_ref = artifact_ref
+        self.committed: Literal[True] = True
+        self.location_lost = location_lost
+        self.intended_path = committed_artifact.path
+        self.manifest: ArtifactManifest = committed_artifact.manifest
+        self.manifest_checksum = committed_artifact.manifest_checksum
+        self.files: tuple[ArtifactFile, ...] = committed_artifact.files
+        self.artifact_ref: ArtifactRef | None = (
+            None if location_lost else committed_artifact
+        )
 
 
 @runtime_checkable

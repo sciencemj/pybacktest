@@ -33,8 +33,7 @@ from pybacktest.domain.portfolio import (
     PortfolioSnapshot,
     Position,
 )
-from pybacktest.ports import artifacts as artifact_port
-from pybacktest.ports.artifacts import ArtifactStore
+from pybacktest.ports.artifacts import ArtifactDurabilityError, ArtifactStore
 from pybacktest.results.metrics import MetricsConfig, calculate_metrics
 from pybacktest.results.models import (
     ArtifactFile,
@@ -925,22 +924,97 @@ def test_post_publish_failures_return_committed_ref_without_cleanup(
 
         monkeypatch.setattr(local, "_remove_lock", fail_lock_removal)
 
-    durability_error = getattr(
-        artifact_port,
-        "ArtifactDurabilityError",
-        AdapterContractError,
-    )
-    with pytest.raises(durability_error) as captured:
+    with pytest.raises(ArtifactDurabilityError) as captured:
         LocalArtifactStore(root).write(result)
 
-    assert captured.value.code == "artifact_published_durability_uncertain"
-    assert captured.value.artifact_ref == ArtifactRef(
-        path=str(root / str(result.run_id)),
-        manifest=captured.value.artifact_ref.manifest,
-        manifest_checksum=captured.value.artifact_ref.manifest_checksum,
-        files=captured.value.artifact_ref.files,
+    error = captured.value
+    assert error.code == "artifact_published_durability_uncertain"
+    assert error.committed is True
+    assert error.location_lost is False
+    assert error.intended_path == str(root / str(result.run_id))
+    assert error.artifact_ref == ArtifactRef(
+        path=error.intended_path,
+        manifest=error.manifest,
+        manifest_checksum=error.manifest_checksum,
+        files=error.files,
     )
-    assert (root / str(result.run_id)).is_dir()
+    assert Path(error.artifact_ref.path).is_dir()
+    assert "published" in str(error)
+    assert "durability" in str(error)
+
+
+@pytest.mark.parametrize("substitution", ["root", "target"])
+def test_post_publish_namespace_loss_never_claims_a_valid_artifact_ref(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    substitution: str,
+) -> None:
+    import pybacktest.adapters.artifacts.local as local
+
+    root = tmp_path / "artifacts"
+    root.mkdir()
+    outside_root = tmp_path / "outside"
+    outside_root.mkdir()
+    displaced_root = tmp_path / "displaced-root"
+    displaced_target_name = ".committed-target"
+    result = _result()
+    intended_path = root / str(result.run_id)
+    real_publish = local._rename_noreplace
+
+    def publish_then_substitute(
+        root_fd: int,
+        source_name: str,
+        target_name: str,
+    ) -> None:
+        real_publish(root_fd, source_name, target_name)
+        if substitution == "root":
+            root.rename(displaced_root)
+            root.symlink_to(outside_root, target_is_directory=True)
+        else:
+            os.rename(
+                target_name,
+                displaced_target_name,
+                src_dir_fd=root_fd,
+                dst_dir_fd=root_fd,
+            )
+            os.mkdir(target_name, 0o700, dir_fd=root_fd)
+
+    monkeypatch.setattr(local, "_rename_noreplace", publish_then_substitute)
+
+    with pytest.raises(ArtifactDurabilityError) as captured:
+        LocalArtifactStore(root).write(result)
+
+    error = captured.value
+    assert error.code == "artifact_published_durability_uncertain"
+    assert error.committed is True
+    assert error.location_lost is True
+    assert error.artifact_ref is None
+    assert error.intended_path == str(intended_path)
+    assert error.manifest.run_manifest == result.manifest
+    assert error.manifest_checksum == next(
+        item.sha256 for item in error.files if item.name == "manifest.json"
+    )
+    assert tuple(item.name for item in error.files) == (
+        "config.json",
+        "summary.json",
+        "equity.parquet",
+        "positions.parquet",
+        "orders.parquet",
+        "fills.parquet",
+        "events.parquet",
+        "manifest.json",
+        "manifest.sha256",
+    )
+    assert "intended path" in str(error)
+    assert "no longer identifies" in str(error)
+    if substitution == "root":
+        assert not intended_path.exists()
+        assert (displaced_root / str(result.run_id)).is_dir()
+        assert list(outside_root.iterdir()) == []
+    else:
+        assert intended_path.is_dir()
+        assert list(intended_path.iterdir()) == []
+        assert (root / displaced_target_name).is_dir()
 
 
 def test_write_oserror_is_wrapped_as_typed_adapter_failure(
@@ -960,6 +1034,7 @@ def test_write_oserror_is_wrapped_as_typed_adapter_failure(
     with pytest.raises(AdapterContractError) as captured:
         LocalArtifactStore(tmp_path / "artifacts").write(_result())
 
+    assert type(captured.value) is AdapterContractError
     assert captured.value.code == "artifact_io_error"
 
 

@@ -6,10 +6,13 @@ from collections.abc import Iterable
 from decimal import (
     MAX_EMAX,
     MIN_EMIN,
+    Clamped,
     Context,
     Decimal,
     DecimalException,
     Inexact,
+    Subnormal,
+    Underflow,
     localcontext,
 )
 
@@ -39,6 +42,8 @@ def _context(precision: int, *, exact: bool = True) -> Context:
     )
     if exact:
         context.traps[Inexact] = True
+    for signal in (Underflow, Subnormal, Clamped):
+        context.traps[signal] = True
     return context
 
 
