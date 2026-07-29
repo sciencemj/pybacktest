@@ -50,7 +50,7 @@ class RiskContext:
     order_id: OrderId
     submitted_at: datetime
     active_from: datetime
-    active_orders: tuple[Order, ...] = ()
+    active_orders: tuple[Order, ...]
 
     def __post_init__(self) -> None:
         if not isinstance(self.snapshot, PortfolioSnapshot):

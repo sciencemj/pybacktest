@@ -10,6 +10,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
+from enum import StrEnum
 from types import MappingProxyType
 from typing import Protocol
 from uuid import UUID, uuid5
@@ -17,6 +18,7 @@ from weakref import ref
 
 import numpy as np
 
+from pybacktest._introspection import deterministic_instance_state
 from pybacktest.application.provenance import (
     ProvenanceDescriptor,
     external_action_provenance,
@@ -41,7 +43,12 @@ from pybacktest.domain.identifiers import FillId, OrderId, RunId
 from pybacktest.domain.instruments import InstrumentId
 from pybacktest.domain.market import BarView, MarketSlice
 from pybacktest.domain.money import Money
-from pybacktest.domain.orders import CancelOrderIntent, Order, OrderStatus
+from pybacktest.domain.orders import (
+    CancelOrderIntent,
+    Order,
+    OrderStatus,
+    TimeInForce,
+)
 from pybacktest.domain.portfolio import PortfolioSnapshot
 from pybacktest.domain.time import TimeframeUnit
 from pybacktest.engine.accounting import PortfolioLedger
@@ -89,6 +96,19 @@ _SCHEMA_VERSION = "results.v1"
 _BROKER_REGISTRY: dict[int, ref[Broker]] = {}
 _BROKER_REGISTRY_LOCK = threading.Lock()
 
+class _BrokerCallOrigin(StrEnum):
+    """Which engine call produced a broker event batch.
+
+    The legal shape of a batch depends entirely on what the engine asked
+    for, so the origin travels with the batch and is validated explicitly
+    rather than inferred from the events themselves.
+    """
+
+    SUBMIT = "submit"
+    CANCEL = "cancel"
+    PROCESS = "process"
+
+
 _STABLE_ORDER_FIELDS = (
     "instrument",
     "side",
@@ -125,10 +145,17 @@ class SessionStateError(PybacktestError, RuntimeError):
 
 
 class BrokerFactory(Protocol):
-    """Create a fresh broker for one immutable run context."""
+    """Create a fresh broker for one immutable run context.
+
+    Every call must return an instance no previous session has used. The
+    engine enforces this by holding a weak reference to each broker it
+    claims, so a custom broker must support weak references: a class using
+    ``__slots__`` needs ``weakref_slot=True`` (or a ``__weakref__`` slot),
+    otherwise ``reset()`` fails closed with ``unsupported_broker_instance``.
+    """
 
     def create(self, run_context: BrokerRunContext) -> Broker:
-        """Return a broker with no state shared with another run."""
+        """Return a weak-referenceable broker sharing no state with a run."""
         raise NotImplementedError
 
 
@@ -238,6 +265,22 @@ class _RunIdSequence:
         return FillId.parse(f"fill_{value.hex}")
 
 
+class _FillIdFacade:
+    """Expose only ``fill_id`` from the run's identity sequence.
+
+    Handing the broker the whole :class:`_RunIdSequence` would also hand it
+    ``next_order_id()``, letting an adapter advance the engine's own order
+    counter. The broker gets this narrowed capability instead.
+    """
+
+    def __init__(self, sequence: _RunIdSequence) -> None:
+        self._sequence = sequence
+
+    def fill_id(self, sequence: int) -> FillId:
+        """Return the run-scoped identity for one committed fill ordinal."""
+        return self._sequence.fill_id(sequence)
+
+
 class _FixedDatasetSessionBoundary:
     """Explicit DAY expiry derived from the run's fixed market clock.
 
@@ -261,16 +304,25 @@ class _FixedDatasetSessionBoundary:
             timestamp: index
             for index, timestamp in enumerate(self._calendar)
         }
+        # Membership is decided on exact datetime64[ns] values *before* the
+        # microsecond conversion. Truncating first would let a series
+        # timestamp the calendar excludes collapse onto a real calendar
+        # entry and become a phantom DAY anchor.
+        calendar_ns = frozenset(
+            calendar.astype("datetime64[ns]").astype(np.int64).tolist()
+        )
         self._instrument_calendars = {
             instrument_id: tuple(
-                timestamp
-                for timestamp in (
-                    _as_datetime(value)
-                    for value in dataset.series[
-                        instrument_id
-                    ].timestamps
+                _as_datetime(value)
+                for value, exact in zip(
+                    dataset.series[instrument_id].timestamps,
+                    dataset.series[instrument_id]
+                    .timestamps.astype("datetime64[ns]")
+                    .astype(np.int64)
+                    .tolist(),
+                    strict=True,
                 )
-                if timestamp in self._indices
+                if exact in calendar_ns
             )
             for instrument_id in dataset.instruments
         }
@@ -436,7 +488,7 @@ class SimulationSession:
                     dataset,
                     calendar,
                 ),
-                fill_ids=id_sequence,
+                fill_ids=_FillIdFacade(id_sequence),
             )
         )
         if not isinstance(broker, Broker):
@@ -479,7 +531,7 @@ class SimulationSession:
         self._fill_ordinal = 0
         self._index = 0
         self._reset = True
-        self._require_broker_state_agreement()
+        self._require_broker_state_agreement({})
 
         market = self._market_slice(0)
         timestamp = _as_datetime(market.timestamp)
@@ -614,6 +666,7 @@ class SimulationSession:
                 self._apply_broker_events(
                     broker_events,
                     at=current_timestamp,
+                    origin=_BrokerCallOrigin.PROCESS,
                 )
             )
             self._require_held_position_marks(next_marks)
@@ -745,6 +798,8 @@ class SimulationSession:
                     timestamp,
                 ),
                 at=timestamp,
+                origin=_BrokerCallOrigin.CANCEL,
+                cancelled_order_id=sized.order_id,
             )
         if isinstance(sized, CancelOrderIntent):
             raise AdapterContractError(
@@ -876,7 +931,11 @@ class SimulationSession:
         self._submitted_orders[recorded.id] = recorded
         submit_events = self._required_broker().submit(recorded)
         events.extend(
-            self._apply_broker_events(submit_events, at=timestamp)
+            self._apply_broker_events(
+                submit_events,
+                at=timestamp,
+                origin=_BrokerCallOrigin.SUBMIT,
+            )
         )
         return tuple(events)
 
@@ -913,6 +972,8 @@ class SimulationSession:
         broker_events: Sequence[BrokerEvent],
         *,
         at: datetime,
+        origin: _BrokerCallOrigin,
+        cancelled_order_id: OrderId | None = None,
     ) -> tuple[EngineEvent, ...]:
         if isinstance(broker_events, (str, bytes, bytearray)) or not isinstance(
             broker_events, Sequence
@@ -921,18 +982,35 @@ class SimulationSession:
                 "broker events must be a sequence.",
                 code="invalid_broker_events",
             )
-        validated = self._validate_broker_events(broker_events, at=at)
-        emitted = self._record_broker_events(validated)
-        self._require_broker_state_agreement()
-        return emitted
+        predicted = self._validate_broker_events(
+            broker_events,
+            at=at,
+            origin=origin,
+            cancelled_order_id=cancelled_order_id,
+        )
+        self._require_broker_state_agreement(predicted)
+        return self._record_broker_events(broker_events)
 
     def _validate_broker_events(
         self,
         broker_events: Sequence[BrokerEvent],
         *,
         at: datetime,
-    ) -> tuple[BrokerEvent, ...]:
-        """Check every event against engine-owned state before mutating."""
+        origin: _BrokerCallOrigin,
+        cancelled_order_id: OrderId | None,
+    ) -> dict[OrderId, Order]:
+        """Predict engine order state, rejecting before anything mutates.
+
+        Returns the complete engine-owned order state this batch would
+        produce, so the caller can compare the broker's post-call
+        ``active_orders`` against it before any recorder, ledger, fill
+        ordinal, or order-registry mutation happens.
+        """
+        _require_broker_call_origin(
+            broker_events,
+            origin=origin,
+            cancelled_order_id=cancelled_order_id,
+        )
         staged = dict(self._submitted_orders)
         staged_ordinal = self._fill_ordinal
         ids = self._required_ids()
@@ -973,6 +1051,24 @@ class SimulationSession:
                 (OrderFilledEvent, OrderPartiallyFilledEvent),
             ):
                 fill = broker_event.fill
+                if (
+                    fill.order_id != order.id
+                    or fill.instrument != order.instrument
+                    or fill.side is not order.side
+                    or fill.price.currency != order.quote_currency
+                    or fill.fee.currency != order.quote_currency
+                ):
+                    raise AdapterContractError(
+                        "broker fill disagrees with the engine-owned order "
+                        "on identity, side, or quote currency.",
+                        code="invalid_broker_order_state",
+                    )
+                if fill.quantity.value > previous.remaining_quantity.value:
+                    raise AdapterContractError(
+                        "broker fill quantity exceeds the order's remaining "
+                        "quantity.",
+                        code="invalid_broker_order_state",
+                    )
                 if fill.timestamp != at or fill.timestamp < order.active_from:
                     raise AdapterContractError(
                         "broker fill timestamp does not match the timestamp "
@@ -1016,13 +1112,16 @@ class SimulationSession:
                     code="invalid_broker_order_state",
                 )
             staged[order.id] = order
-        return tuple(broker_events)
+        return staged
 
-    def _require_broker_state_agreement(self) -> None:
+    def _require_broker_state_agreement(
+        self,
+        predicted: Mapping[OrderId, Order],
+    ) -> None:
         """Require the broker's active orders to equal the engine's view."""
         expected = {
             order_id: order
-            for order_id, order in self._submitted_orders.items()
+            for order_id, order in predicted.items()
             if order.status
             in {
                 OrderStatus.ACCEPTED,
@@ -1255,6 +1354,21 @@ class SimulationSession:
                 "broker active_orders must map matching IDs to active orders.",
                 code="invalid_active_orders",
             )
+        instruments = self._required_dataset().instruments
+        for order in copied.values():
+            instrument = instruments.get(order.instrument)
+            if instrument is None:
+                raise AdapterContractError(
+                    "broker active_orders contain an instrument outside the "
+                    "run catalog.",
+                    code="invalid_active_orders",
+                )
+            if order.quote_currency != instrument.quote_currency:
+                raise AdapterContractError(
+                    "broker active_orders contain an order whose quote "
+                    "currency disagrees with its instrument.",
+                    code="invalid_active_orders",
+                )
         return copied
 
     def _required_dataset(self) -> MarketDataSet:
@@ -1518,16 +1632,7 @@ def _is_frozen_dataclass(value: object) -> bool:
 
 
 def _instance_state(value: object) -> dict[str, object]:
-    if hasattr(value, "__dict__"):
-        return dict(vars(value))
-    slots = getattr(type(value), "__slots__", ())
-    if isinstance(slots, str):
-        slots = (slots,)
-    return {
-        slot: getattr(value, slot)
-        for slot in slots
-        if hasattr(value, slot)
-    }
+    return deterministic_instance_state(value)
 
 
 def _type_identity(value: object) -> str:
@@ -1596,6 +1701,66 @@ def _sizing_details(sized: Order) -> dict[str, object]:
             else str(sized.limit_price.amount)
         ),
     }
+
+
+def _require_broker_call_origin(
+    broker_events: Sequence[BrokerEvent],
+    *,
+    origin: _BrokerCallOrigin,
+    cancelled_order_id: OrderId | None,
+) -> None:
+    """Reject events the engine's specific broker call cannot produce.
+
+    Every order the engine submits becomes active only at a later
+    timestamp, so ``submit()`` has nothing to report. ``cancel()`` answers
+    for exactly the order it was given. ``process()`` may execute and may
+    end a DAY session, but it may not cancel, and it may not expire an
+    order that carries no DAY instruction.
+    """
+    if origin is _BrokerCallOrigin.SUBMIT:
+        if broker_events:
+            raise AdapterContractError(
+                "broker submit() reported an event for an order that is "
+                "not active yet.",
+                code="invalid_broker_event_origin",
+            )
+        return
+
+    if origin is _BrokerCallOrigin.CANCEL:
+        if len(broker_events) != 1:
+            raise AdapterContractError(
+                "broker cancel() must report exactly one cancellation.",
+                code="invalid_broker_event_origin",
+            )
+        event = broker_events[0]
+        if (
+            not isinstance(event, OrderCancelledEvent)
+            or cancelled_order_id is None
+            or event.order.id != cancelled_order_id
+        ):
+            raise AdapterContractError(
+                "broker cancel() must report a cancellation for exactly "
+                "the requested order.",
+                code="invalid_broker_event_origin",
+            )
+        return
+
+    for event in broker_events:
+        if isinstance(event, OrderCancelledEvent):
+            raise AdapterContractError(
+                "broker process() cannot cancel an order; only the engine "
+                "requests cancellation.",
+                code="invalid_broker_event_origin",
+            )
+        if (
+            isinstance(event, OrderExpiredEvent)
+            and event.order.time_in_force is not TimeInForce.DAY
+        ):
+            raise AdapterContractError(
+                "broker process() expired an order that carries no DAY "
+                "time-in-force instruction.",
+                code="invalid_broker_event_origin",
+            )
 
 
 def _require_stable_order_identity(previous: Order, current: Order) -> None:

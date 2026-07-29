@@ -13,6 +13,7 @@ from pybacktest.adapters.broker import (
     NoSlippage,
     SimulatedBrokerFactory,
 )
+from pybacktest.application import provenance as provenance_module
 from pybacktest.application.provenance import (
     ProvenanceDescriptor,
     python_strategy_provenance,
@@ -48,9 +49,7 @@ _EXPLICIT_PROVENANCE = ProvenanceDescriptor(
 
 def _base_broker_factory() -> SimulatedBrokerFactory:
     return SimulatedBrokerFactory(
-        fill_model=NextBarOpenFill(
-            intrabar_policy=IntrabarPolicy.CONSERVATIVE
-        ),
+        fill_model=NextBarOpenFill(intrabar_policy=IntrabarPolicy.CONSERVATIVE),
         commission=NoCommission(),
         slippage=NoSlippage(),
         liquidity=NoLiquidityLimit(),
@@ -110,6 +109,85 @@ def test_python_provenance_separates_identical_state_implementations() -> None:
     )
 
     assert stateless.strategy_fingerprint != buying.strategy_fingerprint
+
+
+class _SlottedConfigBase:
+    __slots__ = ("threshold",)
+
+
+class _SlottedConfigStrategy(_SlottedConfigBase):
+    def __init__(self, threshold: int) -> None:
+        self.threshold = threshold
+
+    def build_features(self, builder: FeatureBuilder) -> FeaturePlan:
+        return builder.plan()
+
+    def on_bar(
+        self,
+        context: StrategyContext,
+        market: MarketSlice,
+    ) -> tuple:
+        del context, market
+        return ()
+
+
+def test_inherited_slotted_configuration_changes_the_fingerprint() -> None:
+    plan = FeatureBuilder().plan()
+
+    low = python_strategy_provenance(_SlottedConfigStrategy(1), plan)
+    high = python_strategy_provenance(_SlottedConfigStrategy(999), plan)
+
+    assert low.strategy_identity == high.strategy_identity
+    assert low.strategy_fingerprint != high.strategy_fingerprint
+
+
+def test_strategy_fingerprint_depends_on_the_implementation_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    strategy = _StatelessStrategy(Quantity.of("1"))
+    plan = FeatureBuilder().plan()
+    baseline = python_strategy_provenance(strategy, plan)
+
+    monkeypatch.setattr(
+        provenance_module,
+        "_implementation_digest",
+        lambda strategy_type: "0" * 64,
+    )
+    mutated = python_strategy_provenance(strategy, plan)
+
+    assert mutated.strategy_identity == baseline.strategy_identity
+    assert mutated.strategy_fingerprint != baseline.strategy_fingerprint
+
+
+class _CounterBase:
+    __slots__ = ("creates",)
+
+
+class _InheritedCounterBrokerFactory(_CounterBase):
+    """Its only instance state is a counter held in an inherited slot."""
+
+    __slots__ = ()
+
+    def __init__(self) -> None:
+        self.creates = 0
+
+    def create(self, run_context):
+        self.creates += 1
+        return _base_broker_factory().create(run_context)
+
+
+def test_inherited_mutable_counter_fails_the_component_gate() -> None:
+    engine, dataset = _engine_with(_InheritedCounterBrokerFactory())
+
+    with pytest.raises(ConfigurationError) as raised:
+        engine.run(
+            BacktestRequest(
+                strategy=_BuyWhenFlat(Quantity.of("1")),
+                simulation=_simulation(dataset),
+            )
+        )
+
+    assert raised.value.code == "unsupported_component_state"
 
 
 def _source_less_strategy() -> object:
@@ -175,9 +253,7 @@ def test_create_session_binds_an_explicit_provenance_descriptor() -> None:
     assert step.observation is not None
     session.advance((), observation=step.observation)
 
-    assert session.result().manifest.spec_identity == (
-        "strategyspec.momentum.v3"
-    )
+    assert session.result().manifest.spec_identity == ("strategyspec.momentum.v3")
 
 
 class _CountingBrokerFactory:
@@ -276,9 +352,7 @@ class _SharedBrokerFactory:
 
 
 def test_broker_reused_across_sessions_is_rejected() -> None:
-    engine, dataset = _engine_with(
-        _SharedBrokerFactory(_base_broker_factory())
-    )
+    engine, dataset = _engine_with(_SharedBrokerFactory(_base_broker_factory()))
     simulation = _simulation(dataset)
     plan = FeatureBuilder().plan()
     first = engine.create_session(

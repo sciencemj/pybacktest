@@ -99,6 +99,7 @@ def context(*, cash, price, tick, lot):
         order_id=OrderId.parse("order_" + "a" * 32),
         submitted_at=NOW,
         active_from=NOW,
+        active_orders=(),
     )
 
 

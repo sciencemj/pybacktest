@@ -235,7 +235,14 @@ class BrokerRunContext:
 
 @runtime_checkable
 class Broker(Protocol):
-    """Consume active immutable orders and emit typed immutable events."""
+    """Consume active immutable orders and emit typed immutable events.
+
+    An engine-driven run claims its broker instance for that run alone and
+    proves the claim with a weak reference, so an implementation must be
+    weak-referenceable. A ``__slots__`` class needs ``weakref_slot=True``
+    (or an explicit ``__weakref__`` slot); otherwise the engine fails
+    closed rather than risk sharing broker state between runs.
+    """
 
     @property
     def active_orders(self) -> Mapping[OrderId, Order]:

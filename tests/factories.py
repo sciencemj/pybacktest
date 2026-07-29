@@ -1,6 +1,6 @@
 """Deterministic builders shared by Pybacktest tests."""
 
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -301,6 +301,7 @@ def risk_context(
     order_id: OrderId | None = None,
     submitted_at: datetime = BASE_DATETIME,
     active_from: datetime | None = None,
+    active_orders: Sequence[Order] = (),
 ) -> RiskContext:
     """Return deterministic current data and proposed-order identity."""
     current_snapshot = snapshot or portfolio_snapshot()
@@ -357,4 +358,5 @@ def risk_context(
         or OrderId.parse("order_" + "7" * 32),
         submitted_at=submitted_at,
         active_from=active_from or submitted_at + timedelta(days=1),
+        active_orders=tuple(active_orders),
     )

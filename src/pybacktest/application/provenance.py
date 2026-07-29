@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass
 from importlib import metadata
 
+from pybacktest._introspection import deterministic_instance_state
 from pybacktest.data.features import FeaturePlan
 from pybacktest.domain.errors import ConfigurationError
 from pybacktest.results.serialization import canonical_json_bytes
@@ -169,18 +170,7 @@ def _package_identity(strategy_type: type) -> dict[str, str]:
 
 
 def _instance_state(strategy: object) -> object:
-    if hasattr(strategy, "__dict__"):
-        return dict(vars(strategy))
-    if hasattr(type(strategy), "__dataclass_fields__"):
-        return strategy
-    slots = getattr(type(strategy), "__slots__", ())
-    if isinstance(slots, str):
-        slots = (slots,)
-    state: dict[str, object] = {}
-    for slot in slots:
-        if hasattr(strategy, slot):
-            state[slot] = getattr(strategy, slot)
-    return state
+    return deterministic_instance_state(strategy)
 
 
 def _digest(value: object) -> str:

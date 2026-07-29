@@ -27,8 +27,7 @@ class ComponentDescriptor:
             value = getattr(self, field_name)
             if not isinstance(value, str) or not value.strip():
                 raise ConfigurationError(
-                    f"component descriptor {field_name} must be a "
-                    "non-empty string.",
+                    f"component descriptor {field_name} must be a non-empty string.",
                     code="invalid_component_descriptor",
                 )
         if not isinstance(self.configuration, Mapping):
@@ -42,8 +41,7 @@ class ComponentDescriptor:
             for key, item in copied.items()
         ):
             raise ConfigurationError(
-                "component descriptor configuration must map strings "
-                "to strings.",
+                "component descriptor configuration must map strings to strings.",
                 code="invalid_component_descriptor",
             )
         object.__setattr__(

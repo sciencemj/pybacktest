@@ -33,15 +33,28 @@ from pybacktest.domain.money import Money, Quantity
 from pybacktest.domain.orders import (
     CancelOrderIntent,
     DecisionReason,
+    Fill,
     LimitOrderIntent,
     MarketOrderIntent,
+    Order,
     OrderSide,
     OrderStatus,
+    OrderType,
     TimeInForce,
 )
 from pybacktest.domain.time import DateRange, Timeframe
 from pybacktest.engine import BacktestEngine, SessionStateError
-from pybacktest.ports.broker import BrokerRunContext
+from pybacktest.engine.session import (
+    _as_datetime,
+    _FixedDatasetSessionBoundary,
+)
+from pybacktest.ports.broker import (
+    BrokerRunContext,
+    OrderCancelledEvent,
+    OrderExpiredEvent,
+    OrderFilledEvent,
+)
+from pybacktest.ports.components import ComponentDescriptor
 from pybacktest.ports.risk import RiskContext, RiskDecision, RiskStatus
 from pybacktest.results.metrics import MetricsConfig
 from pybacktest.risk import DefaultOrderSizer, LongShortRisk
@@ -720,6 +733,145 @@ class _SilentlyResurrectingBrokerFactory(_TamperingBrokerFactory):
         )
 
 
+class _FlippedFillSideBrokerFactory(_TamperingBrokerFactory):
+    def tamper(self, events):
+        if not events:
+            return events
+        first = events[0]
+        flipped = (
+            OrderSide.SELL
+            if first.fill.side is OrderSide.BUY
+            else OrderSide.BUY
+        )
+        return (replace(first, fill=replace(first.fill, side=flipped)),)
+
+
+class _ForeignFillCurrencyBrokerFactory(_TamperingBrokerFactory):
+    def tamper(self, events):
+        if not events:
+            return events
+        first = events[0]
+        return (
+            replace(
+                first,
+                fill=replace(
+                    first.fill,
+                    price=Money.of(first.fill.price.amount, "EUR"),
+                    fee=Money.of(first.fill.fee.amount, "EUR"),
+                ),
+            ),
+        )
+
+
+class _ForeignFillInstrumentBrokerFactory(_TamperingBrokerFactory):
+    def tamper(self, events):
+        if not events:
+            return events
+        first = events[0]
+        other = replace(first.order.instrument, symbol="MSFT")
+        return (
+            replace(
+                first,
+                order=replace(first.order, instrument=other),
+                fill=replace(first.fill, instrument=other),
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("broker_factory", "code"),
+    [
+        (_FlippedFillSideBrokerFactory(), "invalid_broker_order_state"),
+        (_ForeignFillCurrencyBrokerFactory(), "invalid_broker_order_state"),
+        (
+            _ForeignFillInstrumentBrokerFactory(),
+            "invalid_broker_order_state",
+        ),
+    ],
+    ids=("flipped-side", "foreign-currency", "foreign-instrument"),
+)
+def test_fill_order_disagreement_is_rejected_at_the_engine_boundary(
+    broker_factory,
+    code: str,
+) -> None:
+    session = _session(
+        dataset=_three_bar_dataset(),
+        broker_factory=broker_factory,
+    )
+    observation = session.reset()
+
+    with pytest.raises(AdapterContractError) as raised:
+        session.advance((_buy(observation),), observation=observation)
+
+    assert raised.value.code == code
+
+
+def _engine_owned_state(session):
+    """Snapshot every engine-owned mutable structure a fill would change."""
+    recorder = session._required_recorder()
+    ledger_snapshot = session._required_ledger().snapshot()
+    return {
+        "fill_ordinal": session._fill_ordinal,
+        "submitted_orders": dict(session._submitted_orders),
+        "recorder_fills": tuple(recorder._fills),
+        "recorder_orders": dict(recorder._orders),
+        "recorder_events": tuple(recorder._events),
+        "ledger_cash": ledger_snapshot.cash,
+        "ledger_positions": {
+            instrument_id: position.quantity
+            for instrument_id, position in (
+                ledger_snapshot.positions.items()
+            )
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "broker_factory",
+    [
+        _FlippedFillSideBrokerFactory(),
+        _ForeignFillCurrencyBrokerFactory(),
+        _SilentlyResurrectingBrokerFactory(),
+    ],
+    ids=("side-mismatch", "currency-mismatch", "broker-state-mismatch"),
+)
+def test_rejected_broker_batch_mutates_no_engine_owned_state(
+    broker_factory,
+) -> None:
+    session = _session(
+        dataset=_three_bar_dataset(),
+        broker_factory=broker_factory,
+    )
+    observation = session.reset()
+    before = _engine_owned_state(session)
+
+    with pytest.raises(AdapterContractError):
+        session.advance((_buy(observation),), observation=observation)
+
+    after = _engine_owned_state(session)
+    # Sizing/risk/scheduling before the broker call is legitimate; nothing a
+    # broker *event* would have changed may have moved.
+    assert after["fill_ordinal"] == before["fill_ordinal"]
+    assert after["recorder_fills"] == before["recorder_fills"]
+    assert after["ledger_cash"] == before["ledger_cash"]
+    assert after["ledger_positions"] == before["ledger_positions"]
+    broker_driven = {
+        OrderStatus.PARTIALLY_FILLED,
+        OrderStatus.FILLED,
+        OrderStatus.CANCELLED,
+    }
+    assert not [
+        order
+        for order in after["recorder_orders"].values()
+        if order.status in broker_driven
+    ]
+    assert not [
+        order
+        for order in after["submitted_orders"].values()
+        if order.status in broker_driven
+    ]
+
+
 @pytest.mark.parametrize(
     ("broker_factory", "code"),
     [
@@ -772,6 +924,157 @@ def test_broker_trust_boundary_rejects_before_recorder_mutation() -> None:
     assert raised.value.code == "unknown_broker_order"
     with pytest.raises(SessionStateError, match="failed"):
         session.result()
+
+
+class _SubmitFabricatesFillBroker(_TamperingBroker):
+    def submit(self, order):
+        self._inner.submit(order)
+        return (
+            OrderFilledEvent(
+                fill=Fill(
+                    id=FillId.parse("fill_" + "d" * 32),
+                    order_id=order.id,
+                    instrument=order.instrument,
+                    side=order.side,
+                    quantity=order.quantity,
+                    price=Money.usd("100"),
+                    fee=Money.usd("0"),
+                    timestamp=order.active_from,
+                ),
+                order=replace(
+                    order,
+                    status=OrderStatus.FILLED,
+                    filled_quantity=order.quantity,
+                ),
+            ),
+        )
+
+
+class _CancelReturnsExpiryBroker(_TamperingBroker):
+    def cancel(self, order_id: OrderId, timestamp: datetime):
+        events = tuple(self._inner.cancel(order_id, timestamp))
+        return tuple(
+            OrderExpiredEvent(
+                order=event.order,
+                timestamp=event.timestamp,
+                message="fabricated expiry from cancel",
+            )
+            for event in events
+        )
+
+
+class _LateFabricatingBroker(_TamperingBroker):
+    """Behave normally until the order is resting, then fabricate one event."""
+
+    _calls = 0
+
+    def process(self, market: MarketSlice, rng):
+        self._calls += 1
+        active = tuple(self._inner.active_orders.values())
+        events = tuple(self._inner.process(market, rng))
+        if events or not active or self._calls < 2:
+            return events
+        return (self.fabricate(active[0], _as_datetime(market.timestamp)),)
+
+    def fabricate(self, order, timestamp):
+        raise NotImplementedError
+
+
+class _ProcessCancelsBroker(_LateFabricatingBroker):
+    def fabricate(self, order, timestamp):
+        return OrderCancelledEvent(
+            order=order.cancel("fabricated cancel from process"),
+            timestamp=timestamp,
+            message="fabricated cancel from process",
+        )
+
+
+class _ProcessExpiresGtcBroker(_LateFabricatingBroker):
+    def fabricate(self, order, timestamp):
+        return OrderExpiredEvent(
+            order=order.cancel("fabricated gtc expiry"),
+            timestamp=timestamp,
+            message="fabricated gtc expiry",
+        )
+
+
+def _origin_factory(broker_type):
+    class _OriginFactory(_TamperingBrokerFactory):
+        def create(self, run_context: BrokerRunContext):
+            return broker_type(
+                _broker_factory().create(run_context),
+                self,
+            )
+
+    return _OriginFactory()
+
+
+def test_submit_may_not_fabricate_an_event_for_an_inactive_order() -> None:
+    session = _session(
+        dataset=_three_bar_dataset(),
+        broker_factory=_origin_factory(_SubmitFabricatesFillBroker),
+    )
+    observation = session.reset()
+
+    with pytest.raises(AdapterContractError) as raised:
+        session.advance((_buy(observation),), observation=observation)
+
+    assert raised.value.code == "invalid_broker_event_origin"
+
+
+def _resting_limit(observation) -> LimitOrderIntent:
+    return LimitOrderIntent(
+        instrument=next(iter(observation.market.bars)),
+        side=OrderSide.BUY,
+        quantity=Quantity.of("1"),
+        limit_price=Money.usd("50"),
+        time_in_force=TimeInForce.GOOD_TIL_CANCELLED,
+        reason=DecisionReason.of("resting"),
+    )
+
+
+def test_cancel_may_only_return_a_cancellation_for_that_order() -> None:
+    session = _session(
+        dataset=_three_bar_dataset(),
+        broker_factory=_origin_factory(_CancelReturnsExpiryBroker),
+    )
+    first = session.reset()
+    step = session.advance((_resting_limit(first),), observation=first)
+    assert step.observation is not None
+    current = step.observation
+
+    with pytest.raises(AdapterContractError) as raised:
+        session.advance(
+            (
+                CancelOrderIntent(
+                    order_id=current.active_orders[0].id,
+                    reason=DecisionReason.of("cancel_resting"),
+                ),
+            ),
+            observation=current,
+        )
+
+    assert raised.value.code == "invalid_broker_event_origin"
+
+
+@pytest.mark.parametrize(
+    "broker_type",
+    [_ProcessCancelsBroker, _ProcessExpiresGtcBroker],
+    ids=("process-cancels", "process-expires-gtc"),
+)
+def test_process_may_not_cancel_or_expire_a_gtc_order(broker_type) -> None:
+    session = _session(
+        dataset=_three_bar_dataset(),
+        broker_factory=_origin_factory(broker_type),
+    )
+    first = session.reset()
+    step = session.advance((_resting_limit(first),), observation=first)
+    assert step.observation is not None
+
+    with pytest.raises(AdapterContractError) as raised:
+        session.advance((), observation=step.observation)
+
+    assert raised.value.code == "invalid_broker_event_origin"
 
 
 class _FalsyRejectingSizer:
@@ -1113,6 +1416,120 @@ def test_intraday_day_order_partially_fills_at_anchor_then_expires() -> None:
     result = session.result()
     assert result.orders[0].status is OrderStatus.CANCELLED
     assert [fill.quantity for fill in result.fills] == [Quantity.of("1")]
+
+
+def test_instrument_day_calendar_uses_exact_nanosecond_membership() -> None:
+    baseline = _two_bar_dataset()
+    item = next(iter(baseline.instruments.values()))
+    series_timestamps = np.asarray(
+        [
+            "2024-01-02T14:30:00",
+            "2024-01-03T14:30:00.000000001",
+            "2024-01-04T14:30:00",
+        ],
+        dtype="datetime64[ns]",
+    )
+    dataset = MarketDataSet(
+        series={
+            item.id: BarSeries(
+                timestamps=series_timestamps,
+                open=np.full(3, 100.0),
+                high=np.full(3, 101.0),
+                low=np.full(3, 99.0),
+                close=np.full(3, 100.0),
+                volume=np.full(3, 1_000.0),
+            )
+        },
+        instruments={item.id: item},
+        timeframe=Timeframe.days(1),
+    )
+    calendar = np.asarray(
+        [
+            "2024-01-02T14:30:00",
+            "2024-01-03T14:30:00",
+            "2024-01-04T14:30:00",
+        ],
+        dtype="datetime64[ns]",
+    )
+    boundary = _FixedDatasetSessionBoundary(dataset, calendar)
+    anchored = Order.pending(
+        id=OrderId.parse("order_" + "1" * 32),
+        instrument=item.id,
+        side=OrderSide.BUY,
+        type=OrderType.LIMIT,
+        quantity=Quantity.of("1"),
+        quote_currency=item.quote_currency,
+        limit_price=Money.usd("50"),
+        time_in_force=TimeInForce.DAY,
+        submitted_at=datetime(2024, 1, 2, 14, 30, tzinfo=UTC),
+        active_from=datetime(2024, 1, 3, 14, 30, tzinfo=UTC),
+        reason=DecisionReason.of("phantom_anchor_probe"),
+    ).accept()
+
+    assert (
+        boundary.day_order_expired(
+            anchored,
+            datetime(2024, 1, 4, 14, 30, tzinfo=UTC),
+        )
+        is False
+    )
+
+
+class _RunContextRecordingFactory:
+    """Capture the run context the engine hands to a broker factory."""
+
+    def __init__(self) -> None:
+        self.run_context = None
+
+    def component_descriptor(self) -> ComponentDescriptor:
+        return ComponentDescriptor(
+            identity="tests.run_context_recording_factory",
+            version="1",
+            configuration={},
+        )
+
+    def create(self, run_context: BrokerRunContext):
+        self.run_context = run_context
+        return _broker_factory().create(run_context)
+
+
+def test_broker_receives_only_a_narrowed_fill_id_capability() -> None:
+    factory = _RunContextRecordingFactory()
+    session = _session(broker_factory=factory)
+
+    session.reset()
+
+    fill_ids = factory.run_context.fill_ids
+    assert callable(fill_ids.fill_id)
+    assert not hasattr(fill_ids, "next_order_id")
+    assert str(fill_ids.fill_id(0)).startswith("fill_")
+    assert fill_ids.fill_id(0) == fill_ids.fill_id(0)
+    assert fill_ids.fill_id(0) != fill_ids.fill_id(1)
+
+
+class _ForeignActiveOrderBroker(_TamperingBroker):
+    @property
+    def active_orders(self):
+        current = dict(self._inner.active_orders)
+        for order_id, order in tuple(current.items()):
+            current[order_id] = replace(
+                order,
+                instrument=replace(order.instrument, symbol="MSFT"),
+            )
+        return MappingProxyType(current)
+
+
+def test_active_orders_outside_the_catalog_are_a_coded_adapter_error() -> None:
+    session = _session(
+        dataset=_three_bar_dataset(),
+        broker_factory=_origin_factory(_ForeignActiveOrderBroker),
+    )
+    first = session.reset()
+
+    with pytest.raises(AdapterContractError) as raised:
+        session.advance((_resting_limit(first),), observation=first)
+
+    assert raised.value.code == "invalid_active_orders"
 
 
 def test_engine_and_session_constructors_perform_no_data_io() -> None:

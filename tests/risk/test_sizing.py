@@ -95,6 +95,7 @@ def test_risk_context_is_immutable_validated_and_owns_its_collections():
         order_id=OrderId.parse("order_" + "8" * 32),
         submitted_at=BASE_DATETIME,
         active_from=BASE_DATETIME + timedelta(days=1),
+        active_orders=(),
     )
     prices.clear()
     instruments.clear()
@@ -143,6 +144,7 @@ def test_risk_context_rejects_invalid_direct_construction(
         "order_id": OrderId.parse("order_" + "9" * 32),
         "submitted_at": BASE_DATETIME,
         "active_from": BASE_DATETIME + timedelta(days=1),
+        "active_orders": (),
     }
     arguments.update(override)
 
@@ -194,6 +196,7 @@ def test_risk_context_rejects_inconsistent_current_data_relationships(
             order_id=OrderId.parse("order_" + "6" * 32),
             submitted_at=BASE_DATETIME,
             active_from=BASE_DATETIME + timedelta(days=1),
+            active_orders=(),
         )
 
 
@@ -213,6 +216,7 @@ def test_risk_context_rejects_future_snapshot_but_allows_initial_none_timestamp(
             order_id=OrderId.parse("order_" + "5" * 32),
             submitted_at=BASE_DATETIME,
             active_from=BASE_DATETIME,
+            active_orders=(),
         )
 
     value = RiskContext(
@@ -223,6 +227,7 @@ def test_risk_context_rejects_future_snapshot_but_allows_initial_none_timestamp(
         order_id=OrderId.parse("order_" + "4" * 32),
         submitted_at=BASE_DATETIME,
         active_from=BASE_DATETIME,
+        active_orders=(),
     )
     assert value.snapshot.timestamp is None
 
@@ -634,6 +639,7 @@ def test_missing_mark_and_lot_rounding_to_zero_are_typed_rejections():
         order_id=missing_context.order_id,
         submitted_at=missing_context.submitted_at,
         active_from=missing_context.active_from,
+        active_orders=missing_context.active_orders,
     )
     coarse = Instrument(
         id=item.id,
@@ -794,6 +800,7 @@ def test_unknown_instrument_is_a_typed_sizing_rejection():
         order_id=base.order_id,
         submitted_at=base.submitted_at,
         active_from=base.active_from,
+        active_orders=(),
     )
 
     result = DefaultOrderSizer().size(

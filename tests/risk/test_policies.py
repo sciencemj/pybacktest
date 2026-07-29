@@ -374,6 +374,7 @@ def test_unknown_nontradable_and_missing_price_have_stable_first_codes():
         order_id=base.order_id,
         submitted_at=base.submitted_at,
         active_from=base.active_from,
+        active_orders=(),
     )
     nontradable = type(base)(
         snapshot=base.snapshot,
@@ -383,6 +384,7 @@ def test_unknown_nontradable_and_missing_price_have_stable_first_codes():
         order_id=base.order_id,
         submitted_at=base.submitted_at,
         active_from=base.active_from,
+        active_orders=(),
     )
     missing = type(base)(
         snapshot=base.snapshot,
@@ -392,6 +394,7 @@ def test_unknown_nontradable_and_missing_price_have_stable_first_codes():
         order_id=base.order_id,
         submitted_at=base.submitted_at,
         active_from=base.active_from,
+        active_orders=(),
     )
     policy = LongShortRisk(
         max_leverage=Decimal("1"),
@@ -610,6 +613,7 @@ def test_cross_currency_instrument_is_rejected_without_conversion():
         order_id=OrderId.parse("order_" + "e" * 32),
         submitted_at=BASE_DATETIME,
         active_from=BASE_DATETIME,
+        active_orders=(),
     )
 
     decision = LongShortRisk(
@@ -712,6 +716,7 @@ def test_cross_currency_existing_position_is_rejected_before_gross_math():
         order_id=base.order_id,
         submitted_at=base.submitted_at,
         active_from=base.active_from,
+        active_orders=(),
     )
 
     decision = LongShortRisk(
