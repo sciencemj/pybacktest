@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import re
+import threading
+from bisect import bisect_left
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -11,9 +13,14 @@ from decimal import Decimal
 from types import MappingProxyType
 from typing import Protocol
 from uuid import UUID, uuid5
+from weakref import ref
 
 import numpy as np
 
+from pybacktest.application.provenance import (
+    ProvenanceDescriptor,
+    external_action_provenance,
+)
 from pybacktest.application.requests import SimulationRequest
 from pybacktest.data.calendar import CalendarMode
 from pybacktest.data.dataset import MarketDataSet
@@ -48,6 +55,10 @@ from pybacktest.ports.broker import (
     OrderFilledEvent,
     OrderPartiallyFilledEvent,
 )
+from pybacktest.ports.components import (
+    ComponentDescriptor,
+    DeterministicComponent,
+)
 from pybacktest.ports.data import MarketDataSource
 from pybacktest.ports.risk import (
     OrderSizer,
@@ -60,6 +71,7 @@ from pybacktest.ports.strategy import (
     PortfolioSnapshot as StrategyPortfolioSnapshot,
 )
 from pybacktest.ports.strategy import StrategyContext, validate_strategy_output
+from pybacktest.results._decimal import ExactDecimalError, exact_add
 from pybacktest.results.models import (
     BacktestResult,
     CausalStage,
@@ -73,6 +85,39 @@ from pybacktest.strategy.intents import OrderIntent
 
 _LIBRARY_VERSION = "0.2.0"
 _SCHEMA_VERSION = "results.v1"
+
+_BROKER_REGISTRY: dict[int, ref[Broker]] = {}
+_BROKER_REGISTRY_LOCK = threading.Lock()
+
+_STABLE_ORDER_FIELDS = (
+    "instrument",
+    "side",
+    "type",
+    "quantity",
+    "quote_currency",
+    "limit_price",
+    "time_in_force",
+    "submitted_at",
+    "active_from",
+    "reason",
+)
+
+_ALLOWED_BROKER_TRANSITIONS = {
+    OrderStatus.ACCEPTED: frozenset(
+        {
+            OrderStatus.PARTIALLY_FILLED,
+            OrderStatus.FILLED,
+            OrderStatus.CANCELLED,
+        }
+    ),
+    OrderStatus.PARTIALLY_FILLED: frozenset(
+        {
+            OrderStatus.PARTIALLY_FILLED,
+            OrderStatus.FILLED,
+            OrderStatus.CANCELLED,
+        }
+    ),
+}
 
 
 class SessionStateError(PybacktestError, RuntimeError):
@@ -216,6 +261,19 @@ class _FixedDatasetSessionBoundary:
             timestamp: index
             for index, timestamp in enumerate(self._calendar)
         }
+        self._instrument_calendars = {
+            instrument_id: tuple(
+                timestamp
+                for timestamp in (
+                    _as_datetime(value)
+                    for value in dataset.series[
+                        instrument_id
+                    ].timestamps
+                )
+                if timestamp in self._indices
+            )
+            for instrument_id in dataset.instruments
+        }
 
     def day_order_expired(
         self,
@@ -228,29 +286,30 @@ class _FixedDatasetSessionBoundary:
                 code="invalid_session_boundary_instrument",
             )
         current_index = self._indices.get(timestamp)
-        active_index = self._indices.get(order.active_from)
-        if current_index is None or active_index is None:
+        if current_index is None or order.active_from not in self._indices:
             raise AdapterContractError(
                 "DAY expiry timestamp is outside the fixed run calendar.",
                 code="invalid_session_boundary_timestamp",
             )
-        if current_index <= active_index:
+        instrument_calendar = self._instrument_calendars[
+            order.instrument
+        ]
+        anchor_index = bisect_left(
+            instrument_calendar,
+            order.active_from,
+        )
+        if anchor_index == len(instrument_calendar):
+            return False
+        anchor = instrument_calendar[anchor_index]
+        if timestamp <= anchor:
             return False
         if self._daily:
             return True
         timezone = self._instruments[order.instrument].timezone
         return (
             timestamp.astimezone(timezone).date()
-            > order.active_from.astimezone(timezone).date()
+            > anchor.astimezone(timezone).date()
         )
-
-
-@dataclass(frozen=True, slots=True)
-class _Provenance:
-    strategy_identity: str
-    strategy_fingerprint: str
-    spec_identity: str
-    compiler_identity: str
 
 
 class SimulationSession:
@@ -272,6 +331,7 @@ class SimulationSession:
         broker_factory: BrokerFactory,
         order_sizer: OrderSizer,
         risk_policy: RiskPolicy,
+        provenance: ProvenanceDescriptor | None = None,
     ) -> None:
         if not isinstance(simulation, SimulationRequest):
             raise ConfigurationError(
@@ -281,6 +341,14 @@ class SimulationSession:
             raise ConfigurationError("feature_plan must be a FeaturePlan.")
         if not isinstance(run_id, RunId):
             raise ConfigurationError("run_id must be a RunId.")
+        if provenance is not None and not isinstance(
+            provenance,
+            ProvenanceDescriptor,
+        ):
+            raise ConfigurationError(
+                "provenance must be a ProvenanceDescriptor when supplied.",
+                code="invalid_provenance_descriptor",
+            )
         self._simulation = simulation
         self._feature_plan = feature_plan
         self._run_id = run_id
@@ -288,7 +356,11 @@ class SimulationSession:
         self._broker_factory = broker_factory
         self._order_sizer = order_sizer
         self._risk_policy = risk_policy
-        self._provenance = _external_provenance(feature_plan)
+        self._provenance = (
+            external_action_provenance(feature_plan)
+            if provenance is None
+            else provenance
+        )
 
         self._reset = False
         self._done = False
@@ -305,6 +377,8 @@ class SimulationSession:
         self._index = -1
         self._observation: Observation | None = None
         self._last_marks: dict[InstrumentId, tuple[int, Money]] = {}
+        self._submitted_orders: dict[OrderId, Order] = {}
+        self._fill_ordinal = 0
         self._result: BacktestResult | None = None
 
     @property
@@ -317,27 +391,26 @@ class SimulationSession:
         """Return whether the final current observation has been consumed."""
         return self._done
 
-    def _bind_python_strategy(
-        self,
-        *,
-        strategy: object,
-        feature_plan: FeaturePlan,
-    ) -> None:
-        """Bind deterministic Python provenance before any dataset I/O."""
-        if self._reset:
-            raise SessionStateError(
-                "strategy provenance must be bound before reset."
-            )
-        if feature_plan != self._feature_plan:
-            raise ConfigurationError(
-                "bound feature plan must equal the session feature plan."
-            )
-        self._provenance = _python_provenance(strategy, feature_plan)
+    @property
+    def provenance(self) -> ProvenanceDescriptor:
+        """Return the immutable provenance bound when this session was made."""
+        return self._provenance
 
     def reset(self) -> Observation:
         """Load fixed data and return the first current-only observation."""
+        if self._failed:
+            raise SessionStateError("failed session cannot be reset.")
         if self._reset:
             raise SessionStateError("session reset may be called only once.")
+        try:
+            return self._initialize()
+        except Exception:
+            self._discard_runtime_state()
+            self._failed = True
+            raise
+
+    def _initialize(self) -> Observation:
+        """Build runtime state atomically for :meth:`reset`."""
         dataset = _load_dataset(self._data_source, self._simulation)
         calendar = self._simulation.calendar.build(
             {
@@ -349,6 +422,7 @@ class SimulationSession:
             raise DataValidationError(
                 "calendar contains no tradable timestamps."
             )
+        _validate_calendar_precision(calendar)
 
         feature_set = FeatureExecutor().execute(
             self._feature_plan,
@@ -370,6 +444,7 @@ class SimulationSession:
                 "broker factory must return a Broker.",
                 code="invalid_broker",
             )
+        _claim_fresh_broker(broker)
         ledger = PortfolioLedger(
             base_currency=self._simulation.initial_cash.currency,
             initial_cash=self._simulation.initial_cash,
@@ -400,8 +475,11 @@ class SimulationSession:
         self._broker = broker
         self._ledger = ledger
         self._recorder = recorder
+        self._submitted_orders = {}
+        self._fill_ordinal = 0
         self._index = 0
         self._reset = True
+        self._require_broker_state_agreement()
 
         market = self._market_slice(0)
         timestamp = _as_datetime(market.timestamp)
@@ -419,6 +497,26 @@ class SimulationSession:
         observation = self._build_observation(market, snapshot)
         self._observation = observation
         return observation
+
+    def _discard_runtime_state(self) -> None:
+        """Remove any partially installed state after reset failure."""
+        self._reset = False
+        self._done = False
+        self._context_created = False
+        self._dataset = None
+        self._calendar = None
+        self._feature_set = None
+        self._id_sequence = None
+        self._rng = None
+        self._broker = None
+        self._ledger = None
+        self._recorder = None
+        self._index = -1
+        self._observation = None
+        self._last_marks = {}
+        self._submitted_orders = {}
+        self._fill_ordinal = 0
+        self._result = None
 
     def strategy_context(self, observation: Observation) -> StrategyContext:
         """Create one strategy capability for the current observation only."""
@@ -447,14 +545,24 @@ class SimulationSession:
             run_id=self._run_id,
         )
 
-    def advance(self, intents: Sequence[OrderIntent]) -> StepResult:
+    def advance(
+        self,
+        intents: Sequence[OrderIntent],
+        *,
+        observation: Observation,
+    ) -> StepResult:
         """Consume decisions for the current bar and move at most one bar."""
         self._require_active()
-        try:
-            validated = validate_strategy_output(
-                intents,
-                universe=self._simulation.universe,
+        if observation is not self._observation:
+            raise SessionStateError(
+                "observation is stale or belongs to another session."
             )
+        validated = validate_strategy_output(
+            intents,
+            universe=self._simulation.universe,
+        )
+        self._prevalidate_cancellations(validated, observation)
+        try:
             current_events: list[EngineEvent] = []
             next_index = self._index + 1
             has_next = next_index < len(self._required_calendar())
@@ -503,7 +611,10 @@ class SimulationSession:
                 self._required_rng(),
             )
             current_events.extend(
-                self._apply_broker_events(broker_events)
+                self._apply_broker_events(
+                    broker_events,
+                    at=current_timestamp,
+                )
             )
             self._require_held_position_marks(next_marks)
             snapshot = self._required_ledger().mark_to_market(
@@ -526,6 +637,25 @@ class SimulationSession:
         except Exception:
             self._failed = True
             raise
+
+    def _prevalidate_cancellations(
+        self,
+        intents: Sequence[OrderIntent],
+        observation: Observation,
+    ) -> None:
+        """Reject every invalid cancellation before any batch item applies."""
+        active_order_ids = {
+            order.id for order in observation.active_orders
+        }
+        for intent in intents:
+            if (
+                isinstance(intent, CancelOrderIntent)
+                and intent.order_id not in active_order_ids
+            ):
+                raise AdapterContractError(
+                    "cancel intent must identify a current active order.",
+                    code="unknown_cancel_order",
+                )
 
     def result(self) -> BacktestResult:
         """Finalize and return the immutable result after completion."""
@@ -588,6 +718,7 @@ class SimulationSession:
             order_id=order_id,
             submitted_at=timestamp,
             active_from=active_from,
+            active_orders=self._active_orders(),
         )
         sized = self._order_sizer.size(intent, context)
         if not isinstance(
@@ -612,7 +743,8 @@ class SimulationSession:
                 self._required_broker().cancel(
                     sized.order_id,
                     timestamp,
-                )
+                ),
+                at=timestamp,
             )
         if isinstance(sized, CancelOrderIntent):
             raise AdapterContractError(
@@ -673,55 +805,38 @@ class SimulationSession:
                 "and instrument lot.",
                 code="invalid_risk_decision",
             )
-        if decision.status is RiskStatus.REJECTED:
-            rejected = sized.reject()
-            self._required_recorder().record_order(rejected)
-            event = self._required_recorder().emit_event(
+        recorder = self._required_recorder()
+        recorded = _decision_order(sized, decision, has_next=has_next)
+        recorder.record_order(recorded)
+        events: list[EngineEvent] = [
+            recorder.emit_event(
                 timestamp=timestamp,
-                stage=CausalStage.of("risk"),
-                code=EngineEventCode.of("order.rejected"),
-                order_id=rejected.id,
-                details={"codes": decision.codes},
-                message=decision.message,
-            )
-            return (event,)
-
-        events: list[EngineEvent] = []
-        accepted_source = sized
-        if decision.status is RiskStatus.ADJUSTED:
-            accepted_source = replace(
-                sized,
-                quantity=decision.final_quantity,
-            )
-            self._required_recorder().record_order(accepted_source)
-            events.append(
-                self._required_recorder().emit_event(
-                    timestamp=timestamp,
-                    stage=CausalStage.of("risk"),
-                    code=EngineEventCode.of("order.adjusted"),
-                    order_id=accepted_source.id,
-                    details={
-                        "requested_quantity": str(
-                            decision.original_quantity.value
-                        ),
-                        "adjusted_quantity": str(
-                            decision.final_quantity.value
-                        ),
-                        "codes": decision.codes,
-                    },
-                    message=decision.message,
-                )
-            )
+                stage=CausalStage.of("intent"),
+                code=EngineEventCode.of("intent.received"),
+                order_id=recorded.id,
+                details=_intent_details(intent),
+                message="Strategy intent accepted for sizing.",
+            ),
+            recorder.emit_event(
+                timestamp=timestamp,
+                stage=CausalStage.of("sizing"),
+                code=EngineEventCode.of("order.sized"),
+                order_id=recorded.id,
+                details=_sizing_details(sized),
+                message="Intent sized into one proposed order.",
+            ),
+            self._emit_risk_event(recorded, decision, timestamp),
+        ]
+        if decision.status is RiskStatus.REJECTED:
+            return tuple(events)
 
         if not has_next:
-            terminal = accepted_source.reject()
-            self._required_recorder().record_order(terminal)
             events.append(
-                self._required_recorder().emit_event(
+                recorder.emit_event(
                     timestamp=timestamp,
                     stage=CausalStage.of("scheduling"),
                     code=EngineEventCode.of("terminal.no_next_bar"),
-                    order_id=terminal.id,
+                    order_id=recorded.id,
                     details={
                         "policy": "reject_after_sizing_and_risk",
                     },
@@ -733,27 +848,71 @@ class SimulationSession:
             )
             return tuple(events)
 
-        accepted = accepted_source.accept()
-        self._required_recorder().record_order(accepted)
         events.append(
-            self._required_recorder().emit_event(
+            recorder.emit_event(
+                timestamp=timestamp,
+                stage=CausalStage.of("scheduling"),
+                code=EngineEventCode.of("order.scheduled"),
+                order_id=recorded.id,
+                details={
+                    "active_from": recorded.active_from.isoformat(),
+                    "time_in_force": recorded.time_in_force.value,
+                },
+                message="Order scheduled for the next tradable timestamp.",
+            )
+        )
+        events.append(
+            recorder.emit_event(
                 timestamp=timestamp,
                 stage=CausalStage.of("broker"),
                 code=EngineEventCode.of("order.accepted"),
-                order_id=accepted.id,
+                order_id=recorded.id,
                 details={
-                    "active_from": accepted.active_from.isoformat(),
+                    "active_from": recorded.active_from.isoformat(),
                 },
                 message="Order accepted for next-bar execution.",
             )
         )
-        submit_events = self._required_broker().submit(accepted)
-        events.extend(self._apply_broker_events(submit_events))
+        self._submitted_orders[recorded.id] = recorded
+        submit_events = self._required_broker().submit(recorded)
+        events.extend(
+            self._apply_broker_events(submit_events, at=timestamp)
+        )
         return tuple(events)
+
+    def _emit_risk_event(
+        self,
+        order: Order,
+        decision: RiskDecision,
+        timestamp: datetime,
+    ) -> EngineEvent:
+        """Record every risk outcome, including an unchanged pass."""
+        if decision.status is RiskStatus.PASSED:
+            code = "risk.passed"
+        elif decision.status is RiskStatus.ADJUSTED:
+            code = "order.adjusted"
+        else:
+            code = "order.rejected"
+        return self._required_recorder().emit_event(
+            timestamp=timestamp,
+            stage=CausalStage.of("risk"),
+            code=EngineEventCode.of(code),
+            order_id=order.id,
+            details={
+                "requested_quantity": str(
+                    decision.original_quantity.value
+                ),
+                "adjusted_quantity": str(decision.final_quantity.value),
+                "codes": decision.codes,
+            },
+            message=decision.message,
+        )
 
     def _apply_broker_events(
         self,
         broker_events: Sequence[BrokerEvent],
+        *,
+        at: datetime,
     ) -> tuple[EngineEvent, ...]:
         if isinstance(broker_events, (str, bytes, bytearray)) or not isinstance(
             broker_events, Sequence
@@ -762,13 +921,136 @@ class SimulationSession:
                 "broker events must be a sequence.",
                 code="invalid_broker_events",
             )
-        emitted: list[EngineEvent] = []
-        recorder = self._required_recorder()
+        validated = self._validate_broker_events(broker_events, at=at)
+        emitted = self._record_broker_events(validated)
+        self._require_broker_state_agreement()
+        return emitted
+
+    def _validate_broker_events(
+        self,
+        broker_events: Sequence[BrokerEvent],
+        *,
+        at: datetime,
+    ) -> tuple[BrokerEvent, ...]:
+        """Check every event against engine-owned state before mutating."""
+        staged = dict(self._submitted_orders)
+        staged_ordinal = self._fill_ordinal
+        ids = self._required_ids()
         for broker_event in broker_events:
+            if not isinstance(
+                broker_event,
+                (
+                    OrderFilledEvent,
+                    OrderPartiallyFilledEvent,
+                    OrderCancelledEvent,
+                    OrderExpiredEvent,
+                ),
+            ):
+                raise AdapterContractError(
+                    "broker returned an unsupported event value.",
+                    code="invalid_broker_event",
+                )
+            order = broker_event.order
+            previous = staged.get(order.id)
+            if previous is None:
+                raise AdapterContractError(
+                    "broker event references an order the engine never "
+                    "submitted.",
+                    code="unknown_broker_order",
+                )
+            _require_stable_order_identity(previous, order)
+            if order.status not in _ALLOWED_BROKER_TRANSITIONS.get(
+                previous.status,
+                frozenset(),
+            ):
+                raise AdapterContractError(
+                    "broker event moved an order through an invalid "
+                    "lifecycle transition.",
+                    code="invalid_broker_order_state",
+                )
             if isinstance(
                 broker_event,
                 (OrderFilledEvent, OrderPartiallyFilledEvent),
             ):
+                fill = broker_event.fill
+                if fill.timestamp != at or fill.timestamp < order.active_from:
+                    raise AdapterContractError(
+                        "broker fill timestamp does not match the timestamp "
+                        "the broker was asked to process.",
+                        code="invalid_broker_event_timestamp",
+                    )
+                if fill.id != ids.fill_id(staged_ordinal):
+                    raise AdapterContractError(
+                        "broker fill identity is not the next run-scoped "
+                        "UUID5 fill ordinal.",
+                        code="invalid_fill_identity",
+                    )
+                try:
+                    expected_filled = exact_add(
+                        previous.filled_quantity.value,
+                        fill.quantity.value,
+                    )
+                except ExactDecimalError as error:
+                    raise AdapterContractError(
+                        "broker fill quantity exceeds the exact numeric "
+                        "range.",
+                        code="invalid_broker_order_state",
+                    ) from error
+                if order.filled_quantity.value != expected_filled:
+                    raise AdapterContractError(
+                        "broker order filled quantity does not equal the "
+                        "prior quantity plus this fill.",
+                        code="invalid_broker_order_state",
+                    )
+                staged_ordinal += 1
+            elif broker_event.timestamp != at:
+                raise AdapterContractError(
+                    "broker lifecycle timestamp does not match the "
+                    "timestamp the broker was asked to process.",
+                    code="invalid_broker_event_timestamp",
+                )
+            elif order.filled_quantity != previous.filled_quantity:
+                raise AdapterContractError(
+                    "broker terminated an order while changing its filled "
+                    "quantity.",
+                    code="invalid_broker_order_state",
+                )
+            staged[order.id] = order
+        return tuple(broker_events)
+
+    def _require_broker_state_agreement(self) -> None:
+        """Require the broker's active orders to equal the engine's view."""
+        expected = {
+            order_id: order
+            for order_id, order in self._submitted_orders.items()
+            if order.status
+            in {
+                OrderStatus.ACCEPTED,
+                OrderStatus.PARTIALLY_FILLED,
+            }
+        }
+        if self._active_orders_mapping() != expected:
+            raise AdapterContractError(
+                "broker active_orders disagree with the engine-owned order "
+                "lifecycle after the call.",
+                code="broker_state_disagreement",
+            )
+
+    def _record_broker_events(
+        self,
+        broker_events: Sequence[BrokerEvent],
+    ) -> tuple[EngineEvent, ...]:
+        emitted: list[EngineEvent] = []
+        recorder = self._required_recorder()
+        for broker_event in broker_events:
+            self._submitted_orders[broker_event.order.id] = (
+                broker_event.order
+            )
+            if isinstance(
+                broker_event,
+                (OrderFilledEvent, OrderPartiallyFilledEvent),
+            ):
+                self._fill_ordinal += 1
                 recorder.record_order(broker_event.order)
                 recorder.record_fill(broker_event.fill)
                 self._required_ledger().apply_fill(broker_event.fill)
@@ -793,10 +1075,8 @@ class SimulationSession:
                         message="Broker execution applied to the ledger.",
                     )
                 )
-            elif isinstance(
-                broker_event,
-                (OrderCancelledEvent, OrderExpiredEvent),
-            ):
+                emitted.append(self._emit_accounting_event(broker_event))
+            else:
                 recorder.record_order(broker_event.order)
                 code = (
                     "order.cancelled"
@@ -812,12 +1092,33 @@ class SimulationSession:
                         message=broker_event.message,
                     )
                 )
-            else:
-                raise AdapterContractError(
-                    "broker returned an unsupported event value.",
-                    code="invalid_broker_event",
-                )
         return tuple(emitted)
+
+    def _emit_accounting_event(
+        self,
+        broker_event: OrderFilledEvent | OrderPartiallyFilledEvent,
+    ) -> EngineEvent:
+        """Record the ledger effect that this fill produced."""
+        snapshot = self._required_ledger().snapshot()
+        position = snapshot.positions.get(broker_event.order.instrument)
+        return self._required_recorder().emit_event(
+            timestamp=broker_event.fill.timestamp,
+            stage=CausalStage.of("accounting"),
+            code=EngineEventCode.of("ledger.applied"),
+            order_id=broker_event.order.id,
+            details={
+                "fill_id": str(broker_event.fill.id),
+                "cash": str(snapshot.cash.amount),
+                "position_quantity": str(
+                    Decimal("0")
+                    if position is None
+                    else position.quantity.value
+                ),
+                "realized_pnl": str(snapshot.realized_pnl.amount),
+                "total_fees": str(snapshot.total_fees.amount),
+            },
+            message="Fill applied to the portfolio ledger.",
+        )
 
     def _market_slice(self, index: int) -> MarketSlice:
         dataset = self._required_dataset()
@@ -929,6 +1230,9 @@ class SimulationSession:
         )
 
     def _active_orders(self) -> tuple[Order, ...]:
+        return tuple(self._active_orders_mapping().values())
+
+    def _active_orders_mapping(self) -> dict[OrderId, Order]:
         active_orders = self._required_broker().active_orders
         if not isinstance(active_orders, Mapping):
             raise AdapterContractError(
@@ -951,7 +1255,7 @@ class SimulationSession:
                 "broker active_orders must map matching IDs to active orders.",
                 code="invalid_active_orders",
             )
-        return tuple(copied.values())
+        return copied
 
     def _required_dataset(self) -> MarketDataSet:
         if self._dataset is None:
@@ -1046,7 +1350,7 @@ def _manifest(
     feature_plan: FeaturePlan,
     dataset: MarketDataSet,
     run_id: RunId,
-    provenance: _Provenance,
+    provenance: ProvenanceDescriptor,
     data_source: object,
     broker_factory: object,
     order_sizer: object,
@@ -1092,6 +1396,7 @@ def _manifest(
                 order_sizer,
                 risk_policy,
             ),
+            "provenance": provenance.canonical_details(),
         }),
         strategy_identity=provenance.strategy_identity,
         strategy_fingerprint=provenance.strategy_fingerprint,
@@ -1112,57 +1417,35 @@ def _manifest(
     )
 
 
-def _external_provenance(feature_plan: FeaturePlan) -> _Provenance:
-    return _Provenance(
-        strategy_identity="external.actions",
-        strategy_fingerprint=_fingerprint(
-            {
-                "identity": "external.actions",
-                "feature_plan": feature_plan,
-            }
-        ),
-        spec_identity="external.actions",
-        compiler_identity="pybacktest.session.external.v1",
-    )
+def _claim_fresh_broker(broker: Broker) -> None:
+    """Require every session to own a broker no other session has used.
 
+    A factory that returns a cached instance would leak order, fill, and
+    clock state between runs, so the reused instance is rejected instead of
+    silently producing a contaminated result.
+    """
+    key = id(broker)
+    with _BROKER_REGISTRY_LOCK:
+        existing = _BROKER_REGISTRY.get(key)
+        if existing is not None and existing() is broker:
+            raise AdapterContractError(
+                "broker factory returned an instance already used by "
+                "another session.",
+                code="reused_broker_instance",
+            )
+        def _discard(discarded: ref[Broker], key: int = key) -> None:
+            with _BROKER_REGISTRY_LOCK:
+                if _BROKER_REGISTRY.get(key) is discarded:
+                    del _BROKER_REGISTRY[key]
 
-def _python_provenance(
-    strategy: object,
-    feature_plan: FeaturePlan,
-) -> _Provenance:
-    identity = _type_identity(strategy)
-    if hasattr(strategy, "__dict__"):
-        state: object = dict(vars(strategy))
-    elif hasattr(type(strategy), "__dataclass_fields__"):
-        state = strategy
-    else:
-        slots = getattr(type(strategy), "__slots__", ())
-        if isinstance(slots, str):
-            slots = (slots,)
-        state = {
-            slot: getattr(strategy, slot)
-            for slot in slots
-            if hasattr(strategy, slot)
-        }
-    try:
-        fingerprint = _fingerprint(
-            {
-                "identity": identity,
-                "configuration": state,
-                "feature_plan": feature_plan,
-            }
-        )
-    except Exception as exc:
-        raise ConfigurationError(
-            "strategy configuration contains unsupported deterministic state.",
-            code="unsupported_strategy_state",
-        ) from exc
-    return _Provenance(
-        strategy_identity=identity,
-        strategy_fingerprint=fingerprint,
-        spec_identity="python.strategy",
-        compiler_identity="pybacktest.session.python.v1",
-    )
+        try:
+            _BROKER_REGISTRY[key] = ref(broker, _discard)
+        except TypeError as exc:
+            raise AdapterContractError(
+                "broker instance must support weak references so the "
+                "engine can prove it is fresh.",
+                code="unsupported_broker_instance",
+            ) from exc
 
 
 def _fingerprint(value: object) -> str:
@@ -1179,10 +1462,7 @@ def _fingerprint(value: object) -> str:
 def _component_fingerprint(*components: object) -> str:
     try:
         descriptors = tuple(
-            {
-                "identity": _type_identity(component),
-                "configuration": _deterministic_object_state(component),
-            }
+            _deterministic_component_state(component)
             for component in components
         )
         return _fingerprint(descriptors)
@@ -1198,9 +1478,46 @@ def _component_fingerprint(*components: object) -> str:
         ) from exc
 
 
-def _deterministic_object_state(value: object) -> object:
-    if hasattr(type(value), "__dataclass_fields__"):
-        return value
+def _deterministic_component_state(value: object) -> dict[str, object]:
+    """Fingerprint declared immutable configuration, never live telemetry.
+
+    A component declares identity explicitly through
+    :class:`~pybacktest.ports.components.DeterministicComponent`. Frozen
+    dataclasses are immutable by construction, and a component with no
+    instance state has nothing that could drift. Anything else carries
+    mutable runtime state the engine refuses to hash, so it fails closed.
+    """
+    identity = _type_identity(value)
+    if isinstance(value, DeterministicComponent):
+        descriptor = value.component_descriptor()
+        if not isinstance(descriptor, ComponentDescriptor):
+            raise ConfigurationError(
+                "component_descriptor() must return a ComponentDescriptor.",
+                code="unsupported_component_state",
+            )
+        return {
+            "identity": descriptor.identity,
+            "version": descriptor.version,
+            "configuration": dict(descriptor.configuration),
+        }
+    if _is_frozen_dataclass(value):
+        return {"identity": identity, "configuration": value}
+    if not _instance_state(value):
+        return {"identity": identity, "configuration": {}}
+    raise ConfigurationError(
+        f"engine component {identity} carries mutable runtime state; "
+        "implement DeterministicComponent to declare its immutable "
+        "configuration.",
+        code="unsupported_component_state",
+    )
+
+
+def _is_frozen_dataclass(value: object) -> bool:
+    parameters = getattr(type(value), "__dataclass_params__", None)
+    return bool(getattr(parameters, "frozen", False))
+
+
+def _instance_state(value: object) -> dict[str, object]:
     if hasattr(value, "__dict__"):
         return dict(vars(value))
     slots = getattr(type(value), "__slots__", ())
@@ -1236,6 +1553,73 @@ def _as_datetime(timestamp: np.datetime64) -> datetime:
             "market timestamp cannot be converted to datetime."
         )
     return value.replace(tzinfo=UTC)
+
+
+def _decision_order(
+    sized: Order,
+    decision: RiskDecision,
+    *,
+    has_next: bool,
+) -> Order:
+    """Return the single order this decision commits to the recorder."""
+    if decision.status is RiskStatus.REJECTED:
+        return sized.reject()
+    source = (
+        sized
+        if decision.status is RiskStatus.PASSED
+        else replace(sized, quantity=decision.final_quantity)
+    )
+    return source.reject() if not has_next else source.accept()
+
+
+def _intent_details(intent: OrderIntent) -> dict[str, object]:
+    """Preserve the strategy's own decision reason and structured details."""
+    details: dict[str, object] = {
+        "intent": type(intent).__name__,
+        "instrument": str(getattr(intent, "instrument", "")),
+        "reason": intent.reason.code,
+    }
+    for key, value in intent.reason.details.items():
+        details[f"reason.{key}"] = value
+    return details
+
+
+def _sizing_details(sized: Order) -> dict[str, object]:
+    return {
+        "side": sized.side.value,
+        "type": sized.type.value,
+        "quantity": str(sized.quantity.value),
+        "time_in_force": sized.time_in_force.value,
+        "limit_price": (
+            ""
+            if sized.limit_price is None
+            else str(sized.limit_price.amount)
+        ),
+    }
+
+
+def _require_stable_order_identity(previous: Order, current: Order) -> None:
+    """Reject a broker order whose immutable identity fields changed."""
+    if any(
+        getattr(previous, field_name) != getattr(current, field_name)
+        for field_name in _STABLE_ORDER_FIELDS
+    ):
+        raise AdapterContractError(
+            "broker event changed an immutable order identity field.",
+            code="invalid_broker_order_state",
+        )
+
+
+def _validate_calendar_precision(calendar: np.ndarray) -> None:
+    """Reject fixed clocks that Python ``datetime`` cannot represent."""
+    microseconds = calendar.astype("datetime64[us]")
+    round_tripped = microseconds.astype("datetime64[ns]")
+    if not np.array_equal(calendar, round_tripped):
+        raise DataValidationError(
+            "calendar contains nanosecond timestamps that cannot be "
+            "represented without precision loss.",
+            code="timestamp_precision_loss",
+        )
 
 
 def _as_np_datetime(value: datetime) -> np.datetime64:

@@ -101,16 +101,29 @@ class LongShortRisk:
         instrument = context.instruments[order.instrument]
         mark = context.prices[order.instrument]
         current = _position_quantity(context, order.instrument)
+        reserved_buy = _active_quantity(
+            context,
+            order.instrument,
+            OrderSide.BUY,
+        )
+        reserved_sell = _active_quantity(
+            context,
+            order.instrument,
+            OrderSide.SELL,
+        )
         direction = (
             Decimal("1") if order.side is OrderSide.BUY else Decimal("-1")
         )
         candidates: list[tuple[str, Decimal]] = []
 
         if not self.allow_short and order.side is OrderSide.SELL:
-            projected = exact_subtract(current, original)
+            sellable = max(
+                exact_subtract(current, reserved_sell),
+                _ZERO,
+            )
+            projected = exact_subtract(sellable, original)
             if projected < _ZERO:
-                short_allowed = current if current > _ZERO else _ZERO
-                candidates.append(("short_not_allowed", short_allowed))
+                candidates.append(("short_not_allowed", sellable))
 
         equity = context.snapshot.equity.amount
         if self.max_position_weight is not None:
@@ -126,10 +139,12 @@ class LongShortRisk:
                     instrument.lot_size,
                 )
                 position_code = "max_position_weight"
-            allowed = _directional_quantity_cap(
+            allowed = _reserved_directional_quantity_cap(
                 current,
                 direction,
                 position_cap,
+                reserved_buy=reserved_buy,
+                reserved_sell=reserved_sell,
             )
             if allowed < original:
                 candidates.append((position_code, allowed))
@@ -139,7 +154,7 @@ class LongShortRisk:
         if equity > _ZERO:
             gross_cap = exact_multiply(equity, self.max_leverage)
             leverage_code = "max_leverage"
-        other_gross = _other_gross_exposure(
+        other_gross = _other_worst_case_gross_exposure(
             context,
             order.instrument,
         )
@@ -152,10 +167,12 @@ class LongShortRisk:
             mark.amount,
             instrument.lot_size,
         )
-        leverage_allowed = _directional_quantity_cap(
+        leverage_allowed = _reserved_directional_quantity_cap(
             current,
             direction,
             leverage_position_cap,
+            reserved_buy=reserved_buy,
+            reserved_sell=reserved_sell,
         )
         if leverage_allowed < original:
             candidates.append((leverage_code, leverage_allowed))
@@ -172,12 +189,22 @@ class LongShortRisk:
                     ("invalid_limit_price",),
                     "Limit order is missing its limit price.",
                 )
+            available_cash = max(
+                exact_subtract(
+                    context.snapshot.cash.amount,
+                    _reserved_buy_cash(context),
+                ),
+                _ZERO,
+            )
             cash_quantity = _lot_quantity(
-                max(context.snapshot.cash.amount, _ZERO),
+                available_cash,
                 affordability_price.amount,
                 instrument.lot_size,
             )
-            closing_short = max(current.copy_negate(), _ZERO)
+            closing_short = max(
+                exact_add(current, reserved_buy).copy_negate(),
+                _ZERO,
+            )
             cash_allowed = max(closing_short, cash_quantity)
             if cash_allowed < original:
                 candidates.append(("available_cash", cash_allowed))
@@ -298,6 +325,19 @@ def _validate_inputs(
                 "invalid_position_lot",
                 f"Position {instrument_id} is not lot-aligned.",
             )
+    for active in context.active_orders:
+        reserved_instrument = context.instruments.get(active.instrument)
+        if reserved_instrument is None:
+            return (
+                "unknown_instrument",
+                f"Unknown reserved instrument {active.instrument}.",
+            )
+        reserved_mark_validation = _validate_mark(
+            context.prices.get(active.instrument),
+            reserved_instrument,
+        )
+        if reserved_mark_validation is not None:
+            return reserved_mark_validation
     return None
 
 
@@ -336,33 +376,99 @@ def _position_quantity(
     return _ZERO if position is None else position.quantity.value
 
 
-def _other_gross_exposure(
+def _active_quantity(
+    context: RiskContext,
+    instrument_id: InstrumentId,
+    side: OrderSide,
+) -> Decimal:
+    """Sum the unfilled quantity already reserved on one instrument side."""
+    total = _ZERO
+    for order in context.active_orders:
+        if order.instrument != instrument_id or order.side is not side:
+            continue
+        total = exact_add(total, order.remaining_quantity.value)
+    return total
+
+
+def _reserved_buy_cash(context: RiskContext) -> Decimal:
+    """Cash already committed by every active buy across the portfolio."""
+    total = _ZERO
+    for order in context.active_orders:
+        if order.side is not OrderSide.BUY:
+            continue
+        price = (
+            order.limit_price
+            if order.type is OrderType.LIMIT and order.limit_price is not None
+            else context.prices.get(order.instrument)
+        )
+        if price is None:
+            continue
+        total = exact_add(
+            total,
+            exact_multiply(order.remaining_quantity.value, price.amount),
+        )
+    return total
+
+
+def _other_worst_case_gross_exposure(
     context: RiskContext,
     excluded: InstrumentId,
 ) -> Decimal:
+    """Gross exposure of other instruments including pending reservations."""
+    instrument_ids: list[InstrumentId] = []
+    for instrument_id in (
+        *context.snapshot.positions,
+        *(order.instrument for order in context.active_orders),
+    ):
+        if instrument_id != excluded and instrument_id not in instrument_ids:
+            instrument_ids.append(instrument_id)
     total = _ZERO
-    for instrument_id, position in context.snapshot.positions.items():
-        if instrument_id == excluded:
+    for instrument_id in instrument_ids:
+        price = context.prices.get(instrument_id)
+        if price is None:
             continue
+        position = context.snapshot.positions.get(instrument_id)
+        current = _ZERO if position is None else position.quantity.value
+        long_case = exact_add(
+            current,
+            _active_quantity(context, instrument_id, OrderSide.BUY),
+        )
+        short_case = exact_subtract(
+            current,
+            _active_quantity(context, instrument_id, OrderSide.SELL),
+        )
         exposure = exact_multiply(
-            position.quantity.value.copy_abs(),
-            context.prices[instrument_id].amount,
+            max(long_case.copy_abs(), short_case.copy_abs()),
+            price.amount,
         )
         total = exact_add(total, exposure)
     return total
 
 
-def _directional_quantity_cap(
+def _reserved_directional_quantity_cap(
     current: Decimal,
     direction: Decimal,
     target_absolute_cap: Decimal,
+    *,
+    reserved_buy: Decimal,
+    reserved_sell: Decimal,
 ) -> Decimal:
+    """Cap one new order against the worst-case projected position."""
     if direction > _ZERO:
         return max(
-            exact_subtract(target_absolute_cap, current),
+            exact_subtract(
+                target_absolute_cap,
+                exact_add(current, reserved_buy),
+            ),
             _ZERO,
         )
-    return max(exact_add(current, target_absolute_cap), _ZERO)
+    return max(
+        exact_add(
+            exact_subtract(current, reserved_sell),
+            target_absolute_cap,
+        ),
+        _ZERO,
+    )
 
 
 def _lot_quantity(
@@ -410,6 +516,19 @@ def _risk_arithmetic_values(
             value
             for instrument in context.instruments.values()
             for value in (instrument.tick_size, instrument.lot_size)
+        ),
+        *(
+            value
+            for active in context.active_orders
+            for value in (
+                active.quantity.value,
+                active.remaining_quantity.value,
+            )
+        ),
+        *(
+            active.limit_price.amount
+            for active in context.active_orders
+            if active.limit_price is not None
         ),
     ]
     if policy.max_position_weight is not None:

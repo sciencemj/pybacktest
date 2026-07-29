@@ -23,6 +23,7 @@ from pybacktest.domain.orders import (
 from pybacktest.ports.risk import RiskContext, SizedOrderIntent
 
 from ._decimal import (
+    exact_add,
     exact_multiply,
     exact_subtract,
     floor_quantity_to_lot,
@@ -312,7 +313,20 @@ def _current_quantity(
     instrument: Instrument,
 ) -> Decimal:
     position = context.snapshot.positions.get(instrument.id)
-    return _ZERO if position is None else position.quantity.value
+    current = _ZERO if position is None else position.quantity.value
+    try:
+        for order in context.active_orders:
+            if order.instrument != instrument.id:
+                continue
+            remaining = order.remaining_quantity.value
+            current = (
+                exact_add(current, remaining)
+                if order.side is OrderSide.BUY
+                else exact_subtract(current, remaining)
+            )
+    except DecimalException:
+        return Decimal("NaN")
+    return current
 
 
 def _pending_order(

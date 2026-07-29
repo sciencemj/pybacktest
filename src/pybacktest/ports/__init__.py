@@ -17,6 +17,7 @@ from .broker import (
     SessionBoundaryProvider,
     SlippageModel,
 )
+from .components import ComponentDescriptor, DeterministicComponent
 from .data import MarketDataSource
 from .risk import (
     OrderSizer,
@@ -40,6 +41,8 @@ __all__ = [
     "BrokerEvent",
     "BrokerRunContext",
     "CommissionModel",
+    "ComponentDescriptor",
+    "DeterministicComponent",
     "FillIdSource",
     "FillModel",
     "LiquidityModel",

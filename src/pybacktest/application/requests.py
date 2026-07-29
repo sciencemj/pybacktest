@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 
+from pybacktest.application.provenance import ProvenanceDescriptor
 from pybacktest.data.calendar import CalendarPolicy
 from pybacktest.domain.errors import ConfigurationError
 from pybacktest.domain.identifiers import RunId
@@ -103,11 +104,19 @@ class SimulationRequest:
 
 @dataclass(frozen=True, slots=True)
 class BacktestRequest:
-    """Bind a Python strategy and optional identity to a simulation."""
+    """Bind a Python strategy and optional identity to a simulation.
+
+    ``provenance`` is the public binding path for callers that compile
+    strategies themselves — ``StrategySpec`` front ends, MCP servers, and
+    other generators — and can therefore state spec, compiler, and schema
+    fingerprints the engine cannot derive. When it is ``None`` the engine
+    derives Python provenance and fails closed if it cannot be trusted.
+    """
 
     strategy: Strategy
     simulation: SimulationRequest
     run_id: RunId | None = None
+    provenance: ProvenanceDescriptor | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.strategy, Strategy):
@@ -120,3 +129,11 @@ class BacktestRequest:
             )
         if self.run_id is not None and not isinstance(self.run_id, RunId):
             raise ConfigurationError("run_id must be a RunId when provided.")
+        if self.provenance is not None and not isinstance(
+            self.provenance,
+            ProvenanceDescriptor,
+        ):
+            raise ConfigurationError(
+                "provenance must be a ProvenanceDescriptor when provided.",
+                code="invalid_provenance_descriptor",
+            )

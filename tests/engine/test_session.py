@@ -14,6 +14,7 @@ from pybacktest.adapters.broker import (
     NoLiquidityLimit,
     NoSlippage,
     SimulatedBrokerFactory,
+    VolumeParticipationLimit,
 )
 from pybacktest.application.requests import SimulationRequest
 from pybacktest.data.calendar import CalendarPolicy
@@ -25,11 +26,12 @@ from pybacktest.domain.errors import (
     DataValidationError,
 )
 from pybacktest.domain.events import OrderRejected
-from pybacktest.domain.identifiers import OrderId, RunId
+from pybacktest.domain.identifiers import FillId, OrderId, RunId
 from pybacktest.domain.instruments import InstrumentId
 from pybacktest.domain.market import MarketSlice
 from pybacktest.domain.money import Money, Quantity
 from pybacktest.domain.orders import (
+    CancelOrderIntent,
     DecisionReason,
     LimitOrderIntent,
     MarketOrderIntent,
@@ -130,26 +132,204 @@ def _session(
     )
 
 
+@pytest.mark.parametrize(
+    "timestamps",
+    [
+        np.asarray(
+            ["2024-01-02T14:30:00.000000001"],
+            dtype="datetime64[ns]",
+        ),
+        np.asarray(
+            [
+                "2024-01-02T14:30:00.000000001",
+                "2024-01-03T14:30:00.000000999",
+            ],
+            dtype="datetime64[ns]",
+        ),
+    ],
+    ids=("one-sub-microsecond-bar", "two-sub-microsecond-bars"),
+)
+def test_reset_rejects_calendars_that_lose_nanosecond_precision(
+    timestamps: np.ndarray,
+) -> None:
+    baseline = _two_bar_dataset()
+    item = next(iter(baseline.instruments.values()))
+    count = len(timestamps)
+    dataset = MarketDataSet(
+        series={
+            item.id: BarSeries(
+                timestamps=timestamps,
+                open=np.full(count, 100.0),
+                high=np.full(count, 101.0),
+                low=np.full(count, 99.0),
+                close=np.full(count, 100.0),
+                volume=np.full(count, 1_000.0),
+            )
+        },
+        instruments={item.id: item},
+        timeframe=Timeframe.days(1),
+    )
+    session = _session(dataset=dataset)
+
+    with pytest.raises(DataValidationError) as raised:
+        session.reset()
+
+    assert raised.value.code == "timestamp_precision_loss"
+    assert "nanosecond" in str(raised.value)
+    with pytest.raises(SessionStateError, match="failed"):
+        session.reset()
+
+
 def test_session_rejects_out_of_order_and_stale_observation_use() -> None:
     session = _session()
 
     with pytest.raises(SessionStateError, match="reset"):
-        session.advance(())
+        session.advance((), observation=object())  # type: ignore[arg-type]
 
     first = session.reset()
     session.strategy_context(first)
     with pytest.raises(SessionStateError, match="already"):
         session.strategy_context(first)
 
-    step = session.advance(())
+    step = session.advance((), observation=first)
     assert step.observation is not None
+    second = step.observation
     with pytest.raises(SessionStateError, match="stale"):
         session.strategy_context(first)
 
-    final = session.advance(())
+    final = session.advance((), observation=second)
     assert final.done
     with pytest.raises(SessionStateError, match="completed"):
-        session.advance(())
+        session.advance((), observation=second)
+
+
+def test_advance_requires_the_exact_current_observation() -> None:
+    session = _session(dataset=_three_bar_dataset())
+    first = session.reset()
+
+    step = session.advance((), observation=first)
+    assert step.observation is not None
+    current = step.observation
+
+    with pytest.raises(SessionStateError, match="stale"):
+        session.advance((), observation=first)
+
+    retry = session.advance((), observation=current)
+    assert retry.observation is not None
+
+
+def test_invalid_cancel_makes_the_whole_intent_batch_atomic() -> None:
+    session = _session(dataset=_three_bar_dataset())
+    first = session.reset()
+    instrument_id = next(iter(first.market.bars))
+    resting = LimitOrderIntent(
+        instrument=instrument_id,
+        side=OrderSide.BUY,
+        quantity=Quantity.of("1"),
+        limit_price=Money.usd("50"),
+        time_in_force=TimeInForce.GOOD_TIL_CANCELLED,
+        reason=DecisionReason.of("resting"),
+    )
+    step = session.advance((resting,), observation=first)
+    assert step.observation is not None
+    current = step.observation
+    active_before = current.active_orders
+    another = replace(
+        resting,
+        reason=DecisionReason.of("must_not_be_submitted"),
+    )
+    foreign_cancel = CancelOrderIntent(
+        order_id=OrderId.parse("order_" + "f" * 32),
+        reason=DecisionReason.of("foreign_cancel"),
+    )
+
+    with pytest.raises(AdapterContractError) as raised:
+        session.advance(
+            (another, foreign_cancel),
+            observation=current,
+        )
+
+    assert raised.value.code == "unknown_cancel_order"
+    assert current.active_orders == active_before
+    retry = session.advance((), observation=current)
+    assert retry.observation is not None
+    assert retry.observation.active_orders == active_before
+
+
+def test_repeated_cancel_of_one_order_never_partially_applies() -> None:
+    session = _session(dataset=_three_bar_dataset())
+    first = session.reset()
+    instrument_id = next(iter(first.market.bars))
+    resting = LimitOrderIntent(
+        instrument=instrument_id,
+        side=OrderSide.BUY,
+        quantity=Quantity.of("1"),
+        limit_price=Money.usd("50"),
+        time_in_force=TimeInForce.GOOD_TIL_CANCELLED,
+        reason=DecisionReason.of("resting"),
+    )
+    step = session.advance((resting,), observation=first)
+    assert step.observation is not None
+    current = step.observation
+    active_before = current.active_orders
+    order_id = active_before[0].id
+    cancel = CancelOrderIntent(
+        order_id=order_id,
+        reason=DecisionReason.of("repeated_cancel"),
+    )
+
+    with pytest.raises(AdapterContractError) as raised:
+        session.advance((cancel, cancel), observation=current)
+
+    assert raised.value.code == "duplicate_cancel_order"
+    retry = session.advance((), observation=current)
+    assert retry.observation is not None
+    assert retry.observation.active_orders == active_before
+
+
+def test_prior_gtc_remainder_reserves_capacity_for_a_later_step() -> None:
+    session = _session(dataset=_three_bar_dataset())
+    first = session.reset()
+    instrument_id = next(iter(first.market.bars))
+    resting = LimitOrderIntent(
+        instrument=instrument_id,
+        side=OrderSide.BUY,
+        quantity=Quantity.of("40"),
+        limit_price=Money.usd("50"),
+        time_in_force=TimeInForce.GOOD_TIL_CANCELLED,
+        reason=DecisionReason.of("resting_reservation"),
+    )
+    step = session.advance((resting,), observation=first)
+    assert step.observation is not None
+    assert len(step.observation.active_orders) == 1
+
+    second = session.advance(
+        (
+            MarketOrderIntent(
+                instrument=instrument_id,
+                side=OrderSide.BUY,
+                quantity=Quantity.of("100"),
+                time_in_force=TimeInForce.GOOD_TIL_CANCELLED,
+                reason=DecisionReason.of("later_step_buy"),
+            ),
+        ),
+        observation=step.observation,
+    )
+    assert second.observation is not None
+    session.advance((), observation=second.observation)
+    result = session.result()
+
+    assert result.orders[1].quantity == Quantity.of("60")
+    adjusted = [
+        event
+        for event in result.events
+        if event.code.value == "order.adjusted"
+    ]
+    assert len(adjusted) == 1
+    assert adjusted[0].details["codes"] == (
+        "max_leverage",
+        "available_cash",
+    )
 
 
 def test_observation_rejects_a_portfolio_from_another_timestamp() -> None:
@@ -180,7 +360,8 @@ def test_final_bar_intent_is_rejected_without_inventing_future_time() -> None:
                 time_in_force=TimeInForce.GOOD_TIL_CANCELLED,
                 reason=DecisionReason.of("terminal_request"),
             ),
-        )
+        ),
+        observation=final_observation,
     )
     result = session.result()
 
@@ -244,7 +425,7 @@ def test_sizer_result_is_validated_at_the_adapter_boundary() -> None:
     observation = session.reset()
 
     with pytest.raises(AdapterContractError) as raised:
-        session.advance((_buy(observation),))
+        session.advance((_buy(observation),), observation=observation)
 
     assert raised.value.code == "invalid_sizer_result"
 
@@ -254,7 +435,7 @@ def test_risk_result_is_validated_at_the_adapter_boundary() -> None:
     observation = session.reset()
 
     with pytest.raises(AdapterContractError) as raised:
-        session.advance((_buy(observation),))
+        session.advance((_buy(observation),), observation=observation)
 
     assert raised.value.code == "invalid_risk_decision"
 
@@ -270,9 +451,327 @@ def test_risk_decision_must_match_the_sized_order_and_lot(
     observation = session.reset()
 
     with pytest.raises(AdapterContractError) as raised:
-        session.advance((_buy(observation),))
+        session.advance((_buy(observation),), observation=observation)
 
     assert raised.value.code == "invalid_risk_decision"
+
+
+def test_same_step_orders_share_deterministic_cash_reservations() -> None:
+    session = _session(dataset=_three_bar_dataset())
+    observation = session.reset()
+    instrument_id = next(iter(observation.market.bars))
+    buy = MarketOrderIntent(
+        instrument=instrument_id,
+        side=OrderSide.BUY,
+        quantity=Quantity.of("100"),
+        time_in_force=TimeInForce.GOOD_TIL_CANCELLED,
+        reason=DecisionReason.of("full_cash"),
+    )
+
+    step = session.advance(
+        (buy, buy),
+        observation=observation,
+    )
+
+    assert step.observation is not None
+    assert (
+        step.observation.portfolio.positions[instrument_id].quantity
+        == Quantity.of("100")
+    )
+    second = session.advance((), observation=step.observation)
+    assert second.observation is not None
+    session.advance((), observation=second.observation)
+    result = session.result()
+    assert [order.status for order in result.orders] == [
+        OrderStatus.FILLED,
+        OrderStatus.REJECTED,
+    ]
+
+
+def test_successful_trade_explanation_records_every_causal_stage() -> None:
+    session = _session(dataset=_three_bar_dataset())
+    observation = session.reset()
+    instrument_id = next(iter(observation.market.bars))
+    intent = MarketOrderIntent(
+        instrument=instrument_id,
+        side=OrderSide.BUY,
+        quantity=Quantity.of("100"),
+        time_in_force=TimeInForce.GOOD_TIL_CANCELLED,
+        reason=DecisionReason.of("full_size_buy", horizon="next_bar"),
+    )
+
+    step = session.advance((intent,), observation=observation)
+    assert step.observation is not None
+    second = session.advance((), observation=step.observation)
+    assert second.observation is not None
+    session.advance((), observation=second.observation)
+    result = session.result()
+
+    explanation = result.explain_trade(result.orders[0].id)
+    assert [entry.stage.value for entry in explanation.entries] == [
+        "intent",
+        "sizing",
+        "risk",
+        "scheduling",
+        "broker",
+        "broker",
+        "accounting",
+    ]
+    assert [entry.code.value for entry in explanation.entries] == [
+        "intent.received",
+        "order.sized",
+        "risk.passed",
+        "order.scheduled",
+        "order.accepted",
+        "order.filled",
+        "ledger.applied",
+    ]
+    assert explanation.entries[0].details["reason"] == "full_size_buy"
+    assert explanation.entries[0].details["reason.horizon"] == "next_bar"
+    assert explanation.entries[1].details["quantity"] == "100"
+    assert explanation.entries[2].details["codes"] == ()
+    assert explanation.entries[-1].details["position_quantity"] == "100"
+
+
+def test_adjusted_trade_explanation_keeps_the_risk_decision_codes() -> None:
+    session = _session(dataset=_three_bar_dataset())
+    observation = session.reset()
+    instrument_id = next(iter(observation.market.bars))
+    intent = MarketOrderIntent(
+        instrument=instrument_id,
+        side=OrderSide.BUY,
+        quantity=Quantity.of("200"),
+        time_in_force=TimeInForce.GOOD_TIL_CANCELLED,
+        reason=DecisionReason.of("oversized_buy"),
+    )
+
+    step = session.advance((intent,), observation=observation)
+    assert step.observation is not None
+    second = session.advance((), observation=step.observation)
+    assert second.observation is not None
+    session.advance((), observation=second.observation)
+    result = session.result()
+
+    explanation = result.explain_trade(result.orders[0].id)
+    risk_entries = [
+        entry
+        for entry in explanation.entries
+        if entry.stage.value == "risk"
+    ]
+    assert len(risk_entries) == 1
+    assert risk_entries[0].code.value == "order.adjusted"
+    assert risk_entries[0].details["codes"] == (
+        "max_leverage",
+        "available_cash",
+    )
+    assert Decimal(risk_entries[0].details["requested_quantity"]) == (
+        Decimal("200")
+    )
+    assert Decimal(risk_entries[0].details["adjusted_quantity"]) == (
+        Decimal("100")
+    )
+    assert [entry.stage.value for entry in explanation.entries] == [
+        "intent",
+        "sizing",
+        "risk",
+        "scheduling",
+        "broker",
+        "broker",
+        "accounting",
+    ]
+
+
+class _TamperingBroker:
+    """Delegate to a real broker and replace only its emitted events."""
+
+    def __init__(self, inner, factory) -> None:
+        self._inner = inner
+        self._factory = factory
+
+    @property
+    def active_orders(self):
+        return self._inner.active_orders
+
+    def submit(self, order):
+        return self._inner.submit(order)
+
+    def cancel(self, order_id: OrderId, timestamp: datetime):
+        return self._inner.cancel(order_id, timestamp)
+
+    def process(self, market: MarketSlice, rng):
+        return self._factory.tamper(
+            tuple(self._inner.process(market, rng))
+        )
+
+
+class _TamperingBrokerFactory:
+    """Stateless factory whose subclasses rewrite broker events."""
+
+    def create(self, run_context: BrokerRunContext):
+        return _TamperingBroker(
+            _broker_factory().create(run_context),
+            self,
+        )
+
+    def tamper(self, events):
+        return events
+
+
+def _foreign_order(order):
+    return replace(
+        order,
+        id=OrderId.parse("order_" + "e" * 32),
+    )
+
+
+class _ForeignOrderBrokerFactory(_TamperingBrokerFactory):
+    def tamper(self, events):
+        if not events:
+            return events
+        first = events[0]
+        return (
+            *events,
+            replace(
+                first,
+                order=_foreign_order(first.order),
+                fill=replace(
+                    first.fill,
+                    order_id=_foreign_order(first.order).id,
+                ),
+            ),
+        )
+
+
+class _MutatedOrderBrokerFactory(_TamperingBrokerFactory):
+    def tamper(self, events):
+        if not events:
+            return events
+        first = events[0]
+        return (
+            replace(
+                first,
+                order=replace(
+                    first.order,
+                    reason=DecisionReason.of("rewritten_by_broker"),
+                ),
+            ),
+        )
+
+
+class _ForeignFillIdBrokerFactory(_TamperingBrokerFactory):
+    def tamper(self, events):
+        if not events:
+            return events
+        first = events[0]
+        return (
+            replace(
+                first,
+                fill=replace(
+                    first.fill,
+                    id=FillId.parse("fill_" + "c" * 32),
+                ),
+            ),
+        )
+
+
+class _FutureFillTimestampBrokerFactory(_TamperingBrokerFactory):
+    def tamper(self, events):
+        if not events:
+            return events
+        first = events[0]
+        shifted = first.fill.timestamp + timedelta(seconds=1)
+        return (
+            replace(first, fill=replace(first.fill, timestamp=shifted)),
+        )
+
+
+class _SilentlyResurrectingBroker(_TamperingBroker):
+    def process(self, market: MarketSlice, rng):
+        events = tuple(self._inner.process(market, rng))
+        self._resurrected = {
+            order.id: order
+            for event in events
+            for order in (event.order,)
+        }
+        return events
+
+    @property
+    def active_orders(self):
+        current = dict(self._inner.active_orders)
+        for order_id, order in getattr(
+            self,
+            "_resurrected",
+            {},
+        ).items():
+            if order.status is OrderStatus.FILLED:
+                current[order_id] = replace(
+                    order,
+                    status=OrderStatus.ACCEPTED,
+                    filled_quantity=Quantity.of("0"),
+                )
+        return MappingProxyType(current)
+
+
+class _SilentlyResurrectingBrokerFactory(_TamperingBrokerFactory):
+    def create(self, run_context: BrokerRunContext):
+        return _SilentlyResurrectingBroker(
+            _broker_factory().create(run_context),
+            self,
+        )
+
+
+@pytest.mark.parametrize(
+    ("broker_factory", "code"),
+    [
+        (_ForeignOrderBrokerFactory(), "unknown_broker_order"),
+        (_MutatedOrderBrokerFactory(), "invalid_broker_order_state"),
+        (_ForeignFillIdBrokerFactory(), "invalid_fill_identity"),
+        (
+            _FutureFillTimestampBrokerFactory(),
+            "invalid_broker_event_timestamp",
+        ),
+        (
+            _SilentlyResurrectingBrokerFactory(),
+            "broker_state_disagreement",
+        ),
+    ],
+    ids=(
+        "foreign-order",
+        "mutated-stable-field",
+        "unexpected-fill-identity",
+        "invalid-fill-timestamp",
+        "active-orders-disagreement",
+    ),
+)
+def test_broker_events_cross_the_engine_owned_trust_boundary(
+    broker_factory,
+    code: str,
+) -> None:
+    session = _session(
+        dataset=_three_bar_dataset(),
+        broker_factory=broker_factory,
+    )
+    observation = session.reset()
+
+    with pytest.raises(AdapterContractError) as raised:
+        session.advance((_buy(observation),), observation=observation)
+
+    assert raised.value.code == code
+
+
+def test_broker_trust_boundary_rejects_before_recorder_mutation() -> None:
+    session = _session(
+        dataset=_three_bar_dataset(),
+        broker_factory=_ForeignOrderBrokerFactory(),
+    )
+    observation = session.reset()
+
+    with pytest.raises(AdapterContractError) as raised:
+        session.advance((_buy(observation),), observation=observation)
+
+    assert raised.value.code == "unknown_broker_order"
+    with pytest.raises(SessionStateError, match="failed"):
+        session.result()
 
 
 class _FalsyRejectingSizer:
@@ -330,12 +829,21 @@ def test_falsy_valid_run_overrides_are_not_replaced_by_defaults(
         risk_policy=risk_policy,
     )
     observation = session.reset()
-    session.advance((_buy(observation),))
-    session.advance(())
+    first = session.advance(
+        (_buy(observation),),
+        observation=observation,
+    )
+    assert first.observation is not None
+    session.advance((), observation=first.observation)
     result = session.result()
 
     assert result.fills == ()
-    assert result.events[0].stage.value == stage
+    rejections = [
+        event
+        for event in result.events
+        if event.code.value == "order.rejected"
+    ]
+    assert [event.stage.value for event in rejections] == [stage]
 
 
 class _NoneSubmitBroker:
@@ -390,7 +898,7 @@ def test_empty_or_invalid_submit_results_always_cross_event_validation() -> None
     observation = session.reset()
 
     with pytest.raises(AdapterContractError) as raised:
-        session.advance((_buy(observation),))
+        session.advance((_buy(observation),), observation=observation)
 
     assert raised.value.code == "invalid_broker_events"
 
@@ -430,12 +938,14 @@ def test_held_position_beyond_union_staleness_has_typed_policy_failure() -> None
         simulation=simulation,
     )
     first = session.reset()
-    session.advance((_buy(first),))
+    step = session.advance((_buy(first),), observation=first)
+    assert step.observation is not None
+    second = step.observation
 
     with pytest.raises(DataValidationError, match="staleness"):
-        session.advance(())
+        session.advance((), observation=second)
     with pytest.raises(SessionStateError, match="failed"):
-        session.advance(())
+        session.advance((), observation=second)
 
 
 @pytest.mark.parametrize(
@@ -467,12 +977,12 @@ def test_run_scoped_dataset_boundary_distinguishes_day_from_gtc(
         reason=DecisionReason.of("resting_limit"),
     )
 
-    first = session.advance((limit,))
+    first = session.advance((limit,), observation=observation)
     assert first.observation is not None
     assert len(first.observation.active_orders) == 1
-    second = session.advance(())
+    second = session.advance((), observation=first.observation)
     assert second.observation is not None
-    session.advance(())
+    session.advance((), observation=second.observation)
     result = session.result()
 
     assert result.orders[0].status is expected_status
@@ -481,6 +991,128 @@ def test_run_scoped_dataset_boundary_distinguishes_day_from_gtc(
         assert "order.expired" not in codes
     else:
         assert expected_event in codes
+
+
+def test_daily_day_order_waits_for_its_instruments_first_eligible_bar() -> None:
+    dataset, _, sparse_id = _asymmetric_dataset()
+    simulation = replace(
+        _simulation(dataset),
+        calendar=CalendarPolicy.union(max_staleness_bars=1),
+    )
+    session = _session(dataset=dataset, simulation=simulation)
+    first = session.reset()
+    resting = LimitOrderIntent(
+        instrument=sparse_id,
+        side=OrderSide.BUY,
+        quantity=Quantity.of("1"),
+        limit_price=Money.usd("50"),
+        time_in_force=TimeInForce.DAY,
+        reason=DecisionReason.of("sparse_daily"),
+    )
+
+    first_step = session.advance((resting,), observation=first)
+    assert first_step.observation is not None
+    second_step = session.advance(
+        (),
+        observation=first_step.observation,
+    )
+
+    assert second_step.observation is not None
+    assert len(second_step.observation.active_orders) == 1
+    session.advance((), observation=second_step.observation)
+    result = session.result()
+    assert result.orders[0].status is OrderStatus.ACCEPTED
+    assert "order.expired" not in {
+        event.code.value for event in result.events
+    }
+
+
+def test_intraday_day_order_partially_fills_at_anchor_then_expires() -> None:
+    baseline = _two_bar_dataset()
+    first = next(iter(baseline.instruments.values()))
+    second = replace(first, id=replace(first.id, symbol="MSFT"))
+    first_timestamps = np.asarray(
+        [
+            "2024-01-02T14:30:00",
+            "2024-01-03T14:30:00",
+            "2024-01-04T14:30:00",
+        ],
+        dtype="datetime64[ns]",
+    )
+    second_timestamps = np.asarray(
+        ["2024-01-02T15:00:00"],
+        dtype="datetime64[ns]",
+    )
+    dataset = MarketDataSet(
+        series={
+            first.id: BarSeries(
+                timestamps=first_timestamps,
+                open=np.full(3, 100.0),
+                high=np.full(3, 101.0),
+                low=np.full(3, 99.0),
+                close=np.full(3, 100.0),
+                volume=np.full(3, 2.0),
+            ),
+            second.id: BarSeries(
+                timestamps=second_timestamps,
+                open=np.asarray([200.0]),
+                high=np.asarray([201.0]),
+                low=np.asarray([199.0]),
+                close=np.asarray([200.0]),
+                volume=np.asarray([1_000.0]),
+            ),
+        },
+        instruments={first.id: first, second.id: second},
+        timeframe=Timeframe.minutes(30),
+    )
+    simulation = replace(
+        _simulation(dataset),
+        timeframe=Timeframe.minutes(30),
+        calendar=CalendarPolicy.union(max_staleness_bars=2),
+    )
+    broker_factory = SimulatedBrokerFactory(
+        fill_model=NextBarOpenFill(
+            intrabar_policy=IntrabarPolicy.CONSERVATIVE
+        ),
+        commission=NoCommission(),
+        slippage=NoSlippage(),
+        liquidity=VolumeParticipationLimit(Decimal("0.5")),
+        borrow_cost=NoBorrowCost(),
+    )
+    session = _session(
+        dataset=dataset,
+        simulation=simulation,
+        broker_factory=broker_factory,
+    )
+    observation = session.reset()
+    order = MarketOrderIntent(
+        instrument=first.id,
+        side=OrderSide.BUY,
+        quantity=Quantity.of("2"),
+        time_in_force=TimeInForce.DAY,
+        reason=DecisionReason.of("intraday_anchor"),
+    )
+
+    step = session.advance((order,), observation=observation)
+    assert step.observation is not None
+    anchor_step = session.advance((), observation=step.observation)
+
+    assert anchor_step.observation is not None
+    assert len(anchor_step.observation.active_orders) == 1
+    assert (
+        anchor_step.observation.active_orders[0].filled_quantity
+        == Quantity.of("1")
+    )
+    expired_step = session.advance(
+        (),
+        observation=anchor_step.observation,
+    )
+    assert expired_step.observation is not None
+    assert expired_step.observation.active_orders == ()
+    session.advance((), observation=expired_step.observation)
+    result = session.result()
+    assert result.orders[0].status is OrderStatus.CANCELLED
+    assert [fill.quantity for fill in result.fills] == [Quantity.of("1")]
 
 
 def test_engine_and_session_constructors_perform_no_data_io() -> None:
@@ -593,9 +1225,9 @@ def test_union_market_is_current_only_while_marks_obey_staleness() -> None:
         calendar=CalendarPolicy.union(max_staleness_bars=1),
     )
     session = _session(dataset=dataset, simulation=simulation)
-    session.reset()
+    first = session.reset()
 
-    step = session.advance(())
+    step = session.advance((), observation=first)
 
     assert step.observation is not None
     assert set(step.observation.market.bars) == {first_id}
@@ -620,7 +1252,7 @@ def test_intersection_calendar_skips_nonshared_timestamps() -> None:
     session = _session(dataset=dataset, simulation=simulation)
     first = session.reset()
 
-    step = session.advance(())
+    step = session.advance((), observation=first)
 
     assert step.observation is not None
     assert step.observation.timestamp == dataset.timestamps[-1]

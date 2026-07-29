@@ -1,6 +1,6 @@
 """Contract and core example tests for long/short risk decisions."""
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from decimal import Decimal, localcontext
 from zoneinfo import ZoneInfo
 
@@ -102,6 +102,36 @@ def proposed_order(
         submitted_at=BASE_DATETIME,
         active_from=BASE_DATETIME,
         reason=DecisionReason.of("proposal"),
+    )
+
+
+def active_order(
+    *,
+    side: OrderSide,
+    quantity: object,
+    item: Instrument | None = None,
+    order_type: OrderType = OrderType.MARKET,
+    limit_price: Money | None = None,
+    filled: object = "0",
+    order_id_digit: str = "a",
+) -> Order:
+    active = replace(
+        proposed_order(
+            side=side,
+            quantity=quantity,
+            item=item,
+            order_type=order_type,
+            limit_price=limit_price,
+        ).accept(),
+        id=OrderId.parse("order_" + order_id_digit * 32),
+    )
+    filled_quantity = Quantity.of(filled)
+    if filled_quantity.value == Decimal("0"):
+        return active
+    return replace(
+        active,
+        status=OrderStatus.PARTIALLY_FILLED,
+        filled_quantity=filled_quantity,
     )
 
 
@@ -405,6 +435,114 @@ def test_available_cash_adjustment_uses_limit_price_and_never_returns_zero_order
     assert decision.status is RiskStatus.ADJUSTED
     assert decision.final_quantity == Quantity.of("5")
     assert decision.codes == ("available_cash",)
+
+
+def test_active_buy_reservations_reduce_available_cash_and_leverage() -> None:
+    pending = active_order(
+        side=OrderSide.BUY,
+        quantity="60",
+        order_type=OrderType.LIMIT,
+        limit_price=Money.usd("100"),
+    )
+    current = replace(context(), active_orders=(pending,))
+
+    decision = LongShortRisk(
+        max_leverage=Decimal("1"),
+        max_position_weight=None,
+        allow_short=False,
+    ).evaluate(
+        proposed_order(side=OrderSide.BUY, quantity="60"),
+        current,
+    )
+
+    assert decision.status is RiskStatus.ADJUSTED
+    assert decision.final_quantity == Quantity.of("40")
+    assert decision.codes == ("max_leverage", "available_cash")
+
+
+def test_active_sell_reservations_cannot_rely_on_other_pending_buys() -> None:
+    current = replace(
+        context(portfolio=snapshot(cash="0", position="10")),
+        active_orders=(
+            active_order(side=OrderSide.BUY, quantity="100"),
+            active_order(
+                side=OrderSide.SELL,
+                quantity="6",
+                order_id_digit="c",
+            ),
+        ),
+    )
+
+    decision = LongShortRisk(
+        max_leverage=Decimal("20"),
+        max_position_weight=None,
+        allow_short=False,
+    ).evaluate(
+        proposed_order(side=OrderSide.SELL, quantity="6"),
+        current,
+    )
+
+    assert decision.status is RiskStatus.ADJUSTED
+    assert decision.final_quantity == Quantity.of("4")
+    assert decision.codes == ("short_not_allowed",)
+
+
+def test_partially_filled_order_reserves_only_its_remaining_quantity() -> None:
+    partially_filled = active_order(
+        side=OrderSide.BUY,
+        quantity="10",
+        filled="4",
+    )
+    current = replace(
+        context(portfolio=snapshot(cash="1200", position="4")),
+        active_orders=(partially_filled,),
+    )
+
+    decision = LongShortRisk(
+        max_leverage=Decimal("1"),
+        max_position_weight=None,
+        allow_short=False,
+    ).evaluate(
+        proposed_order(side=OrderSide.BUY, quantity="10"),
+        current,
+    )
+
+    assert decision.status is RiskStatus.ADJUSTED
+    assert decision.final_quantity == Quantity.of("6")
+    assert decision.codes == ("max_leverage", "available_cash")
+
+
+def test_other_instrument_active_order_reserves_gross_capacity() -> None:
+    first = aapl()
+    second = instrument("MSFT")
+    base = two_position_context(
+        aapl_quantity="0",
+        msft_quantity="0",
+        current_cash="10000",
+    )
+    pending_other = active_order(
+        side=OrderSide.BUY,
+        quantity="60",
+        item=second,
+    )
+    current = replace(base, active_orders=(pending_other,))
+
+    decision = LongShortRisk(
+        max_leverage=Decimal("1"),
+        max_position_weight=None,
+        allow_short=False,
+    ).evaluate(
+        proposed_order(
+            side=OrderSide.BUY,
+            quantity="60",
+            item=first,
+        ),
+        current,
+    )
+
+    assert decision.status is RiskStatus.ADJUSTED
+    assert decision.final_quantity == Quantity.of("40")
+    assert decision.codes == ("max_leverage", "available_cash")
 
 
 def test_risk_rejects_tick_misaligned_current_mark_with_stable_code():

@@ -220,7 +220,7 @@ def test_run_and_manual_session_produce_identical_event_stream() -> None:
             session.strategy_context(observation),
             observation.market,
         )
-        step = session.advance(intents)
+        step = session.advance(intents, observation=observation)
         if step.observation is not None:
             observation = step.observation
     manual_result = session.result()
@@ -241,9 +241,9 @@ def test_risk_adjustment_flows_through_broker_ledger_and_recorder() -> None:
         reason=DecisionReason.of("oversized_buy"),
     )
 
-    step = session.advance((intent,))
+    step = session.advance((intent,), observation=observation)
     assert step.observation is not None
-    session.advance(())
+    session.advance((), observation=step.observation)
     result = session.result()
 
     assert result.orders[0].quantity == Quantity.of("100")
@@ -274,7 +274,7 @@ def test_cancel_intent_flows_through_sizer_broker_and_recorder() -> None:
         time_in_force=TimeInForce.GOOD_TIL_CANCELLED,
         reason=DecisionReason.of("resting"),
     )
-    first = session.advance((resting,))
+    first = session.advance((resting,), observation=observation)
     assert first.observation is not None
     order_id = first.observation.active_orders[0].id
 
@@ -284,11 +284,12 @@ def test_cancel_intent_flows_through_sizer_broker_and_recorder() -> None:
                 order_id=order_id,
                 reason=DecisionReason.of("cancel_resting"),
             ),
-        )
+        ),
+        observation=first.observation,
     )
     assert second.observation is not None
     assert second.observation.active_orders == ()
-    session.advance(())
+    session.advance((), observation=second.observation)
     result = session.result()
 
     assert result.fills == ()

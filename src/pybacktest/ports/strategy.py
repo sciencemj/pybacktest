@@ -194,7 +194,8 @@ def validate_strategy_output(
         if isinstance(intent, CancelOrderIntent):
             if intent.order_id in cancelled:
                 raise AdapterContractError(
-                    "strategy output contains a duplicate cancel request."
+                    "strategy output contains a duplicate cancel request.",
+                    code="duplicate_cancel_order",
                 )
             cancelled.add(intent.order_id)
         validated.append(intent)

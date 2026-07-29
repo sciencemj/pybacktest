@@ -18,6 +18,7 @@ from pybacktest.domain.orders import (
     LimitOrderIntent,
     MarketOrderIntent,
     Order,
+    OrderStatus,
     TargetQuantity,
     TargetWeight,
 )
@@ -49,6 +50,7 @@ class RiskContext:
     order_id: OrderId
     submitted_at: datetime
     active_from: datetime
+    active_orders: tuple[Order, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.snapshot, PortfolioSnapshot):
@@ -126,6 +128,33 @@ class RiskContext:
             raise ConfigurationError(
                 "snapshot timestamp cannot follow submitted_at."
             )
+        if (
+            isinstance(self.active_orders, (str, bytes, bytearray))
+            or not isinstance(self.active_orders, Sequence)
+        ):
+            raise ConfigurationError(
+                "active_orders must be a sequence of active Order values."
+            )
+        active_orders = tuple(self.active_orders)
+        if not all(
+            isinstance(order, Order)
+            and order.status
+            in {
+                OrderStatus.ACCEPTED,
+                OrderStatus.PARTIALLY_FILLED,
+            }
+            and order.instrument in copied_instruments
+            and order.quote_currency
+            == copied_instruments[order.instrument].quote_currency
+            for order in active_orders
+        ):
+            raise ConfigurationError(
+                "active_orders must contain catalog-backed active orders."
+            )
+        if len({order.id for order in active_orders}) != len(active_orders):
+            raise ConfigurationError(
+                "active_orders must contain unique order IDs."
+            )
         object.__setattr__(
             self,
             "prices",
@@ -137,6 +166,7 @@ class RiskContext:
             MappingProxyType(copied_instruments),
         )
         object.__setattr__(self, "tradable", copied_tradable)
+        object.__setattr__(self, "active_orders", active_orders)
 
 
 class RiskStatus(StrEnum):

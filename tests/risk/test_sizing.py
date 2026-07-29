@@ -251,6 +251,38 @@ def test_target_weight_sizes_from_current_equity_and_position():
     assert order.quantity.value == Decimal("50")
 
 
+def test_target_sizing_includes_signed_active_remaining_orders() -> None:
+    item = aapl()
+    base = context(portfolio=snapshot(position="10"))
+    pending = Order.pending(
+        id=OrderId.parse("order_" + "a" * 32),
+        instrument=item.id,
+        side=OrderSide.BUY,
+        type=OrderType.MARKET,
+        quantity=Quantity.of("20"),
+        quote_currency=item.quote_currency,
+        limit_price=None,
+        time_in_force=TimeInForce.DAY,
+        submitted_at=base.submitted_at,
+        active_from=base.active_from,
+        reason=DecisionReason.of("already_pending"),
+    ).accept()
+    with_reservation = replace(base, active_orders=(pending,))
+
+    order = DefaultOrderSizer().size(
+        TargetQuantity(
+            instrument=item.id,
+            quantity=Quantity.of("50"),
+            reason=DecisionReason.of("target_fifty"),
+        ),
+        with_reservation,
+    )
+
+    assert isinstance(order, Order)
+    assert order.side is OrderSide.BUY
+    assert order.quantity == Quantity.of("20")
+
+
 @pytest.mark.parametrize(
     ("position", "weight", "side", "quantity"),
     [

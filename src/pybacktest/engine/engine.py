@@ -2,6 +2,10 @@
 
 from dataclasses import dataclass
 
+from pybacktest.application.provenance import (
+    ProvenanceDescriptor,
+    python_strategy_provenance,
+)
 from pybacktest.application.requests import BacktestRequest, SimulationRequest
 from pybacktest.data.features import FeatureBuilder, FeaturePlan
 from pybacktest.domain.errors import ConfigurationError
@@ -89,8 +93,14 @@ class BacktestEngine:
         run_id: RunId | None = None,
         order_sizer: OrderSizer | None = None,
         risk_policy: RiskPolicy | None = None,
+        provenance: ProvenanceDescriptor | None = None,
     ) -> SimulationSession:
-        """Create one I/O-free, single-use isolated session."""
+        """Create one I/O-free, single-use isolated session.
+
+        ``provenance`` binds an explicit immutable descriptor for callers
+        that compile their own strategies. Omitting it declares an
+        external-action session with deterministic external provenance.
+        """
         if not isinstance(simulation, SimulationRequest):
             raise ConfigurationError(
                 "simulation must be a SimulationRequest."
@@ -127,6 +137,7 @@ class BacktestEngine:
             broker_factory=self._broker_factory,
             order_sizer=resolved_sizer,
             risk_policy=resolved_risk,
+            provenance=provenance,
         )
 
     def run(
@@ -153,10 +164,14 @@ class BacktestEngine:
             run_id=request.run_id,
             order_sizer=order_sizer,
             risk_policy=risk_policy,
-        )
-        session._bind_python_strategy(
-            strategy=request.strategy,
-            feature_plan=feature_plan,
+            provenance=(
+                request.provenance
+                if request.provenance is not None
+                else python_strategy_provenance(
+                    request.strategy,
+                    feature_plan,
+                )
+            ),
         )
         observation = session.reset()
         while not session.done:
@@ -165,7 +180,7 @@ class BacktestEngine:
                 context,
                 observation.market,
             )
-            step = session.advance(intents)
+            step = session.advance(intents, observation=observation)
             if step.observation is not None:
                 observation = step.observation
         return session.result()

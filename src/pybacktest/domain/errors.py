@@ -16,6 +16,10 @@ class ConfigurationError(PybacktestError, ValueError):
 class DataValidationError(PybacktestError, ValueError):
     """Raised when market data violates the source contract."""
 
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+
 
 class LookaheadViolation(PybacktestError):
     """Raised when code requests data after the current engine timestamp."""

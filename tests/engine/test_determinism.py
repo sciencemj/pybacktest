@@ -154,7 +154,10 @@ def test_interleaved_sessions_do_not_share_execution_or_ledger_state() -> None:
         reason=DecisionReason.of("isolated_buy"),
     )
 
-    first_step = first_session.advance((buy,))
+    first_step = first_session.advance(
+        (buy,),
+        observation=first_observation,
+    )
 
     assert first_step.observation is not None
     assert (
@@ -166,11 +169,14 @@ def test_interleaved_sessions_do_not_share_execution_or_ledger_state() -> None:
     assert second_observation.active_orders == ()
     assert second_observation.portfolio.positions == {}
 
-    second_step = second_session.advance(())
+    second_step = second_session.advance(
+        (),
+        observation=second_observation,
+    )
     assert second_step.observation is not None
     assert second_step.observation.portfolio.positions == {}
-    first_session.advance(())
-    second_session.advance(())
+    first_session.advance((), observation=first_step.observation)
+    second_session.advance((), observation=second_step.observation)
     first_result = first_session.result()
     second_result = second_session.result()
 
@@ -269,7 +275,7 @@ def test_interleaved_sessions_own_independent_seeded_rng_streams() -> None:
         run_id=RunId.parse("run_" + "7" * 32),
     )
     first_observation = first.reset()
-    second.reset()
+    second_observation = second.reset()
     instrument_id = next(iter(first_observation.market.bars))
     buy = MarketOrderIntent(
         instrument=instrument_id,
@@ -279,10 +285,12 @@ def test_interleaved_sessions_own_independent_seeded_rng_streams() -> None:
         reason=DecisionReason.of("rng_isolation"),
     )
 
-    first.advance((buy,))
-    second.advance((buy,))
-    first.advance(())
-    second.advance(())
+    first_step = first.advance((buy,), observation=first_observation)
+    second_step = second.advance((buy,), observation=second_observation)
+    assert first_step.observation is not None
+    assert second_step.observation is not None
+    first.advance((), observation=first_step.observation)
+    second.advance((), observation=second_step.observation)
 
     assert first.result().fills[0].price == Money.usd("105.13")
     assert second.result().fills[0].price == Money.usd("105.13")
@@ -295,9 +303,10 @@ def test_external_action_session_has_explicit_deterministic_provenance() -> None
         feature_plan=FeatureBuilder().plan(),
         run_id=RunId.parse("run_" + "8" * 32),
     )
-    session.reset()
-    session.advance(())
-    session.advance(())
+    first = session.reset()
+    step = session.advance((), observation=first)
+    assert step.observation is not None
+    session.advance((), observation=step.observation)
 
     manifest = session.result().manifest
 
