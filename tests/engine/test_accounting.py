@@ -559,6 +559,32 @@ def test_decimal_alignment_failure_uses_stable_error_without_mutation() -> None:
     assert account.snapshot() == before
 
 
+def test_large_aligned_fill_reconciles_beyond_default_decimal_context() -> None:
+    account = ledger()
+    snapshot = account.apply_fill(
+        fill(
+            AAPL.id,
+            OrderSide.BUY,
+            quantity="12345678901234567890",
+            price="12345678901234567890.00",
+            fee="0.01",
+            offset=0,
+        )
+    )
+
+    position = snapshot.positions[AAPL.id]
+    assert position.quantity.value == Decimal("12345678901234567890")
+    assert position.book_cost.amount == Decimal(
+        "152415787532388367501905199875019052100.00"
+    )
+    assert snapshot.cash.amount == Decimal(
+        "-152415787532388367501905199875019042100.01"
+    )
+    assert snapshot.total_fees == Money.usd("0.01")
+    assert snapshot.unrealized_pnl == Money.usd("0")
+    assert snapshot.equity == Money.usd("9999.99")
+
+
 def test_non_monotonic_fill_cash_and_mark_timestamps_are_rejected() -> None:
     operations = (
         lambda account: account.apply_fill(

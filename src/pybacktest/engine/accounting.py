@@ -189,26 +189,25 @@ class PortfolioLedger:
                     signed_fill_quantity=signed_quantity,
                     fill_price=fill.price.amount,
                 )
+                if new_quantity - old_quantity != signed_quantity:
+                    raise AccountingInvariantError(
+                        "fill position delta did not reconcile."
+                    )
+                if candidate_cash.amount - self._cash.amount != cash_delta:
+                    raise AccountingInvariantError(
+                        "fill cash delta did not reconcile."
+                    )
+                if (
+                    candidate_fees.amount - self._total_fees.amount
+                    != fill.fee.amount
+                ):
+                    raise AccountingInvariantError(
+                        "fill fee delta did not reconcile."
+                    )
         except (DecimalException, ConfigurationError) as error:
             raise AccountingInvariantError(
                 "fill arithmetic produced an impossible value."
             ) from error
-
-        if new_quantity - old_quantity != signed_quantity:
-            raise AccountingInvariantError(
-                "fill position delta did not reconcile."
-            )
-        if candidate_cash.amount - self._cash.amount != cash_delta:
-            raise AccountingInvariantError(
-                "fill cash delta did not reconcile."
-            )
-        if (
-            candidate_fees.amount - self._total_fees.amount
-            != fill.fee.amount
-        ):
-            raise AccountingInvariantError(
-                "fill fee delta did not reconcile."
-            )
 
         candidate_positions = dict(self._positions)
         candidate_positions[fill.instrument] = new_position
