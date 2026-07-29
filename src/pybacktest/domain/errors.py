@@ -27,3 +27,12 @@ class ClockRegressionError(PybacktestError):
 
 class AdapterContractError(PybacktestError):
     """Raised when a port implementation violates its contract."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "adapter_contract_error",
+    ) -> None:
+        super().__init__(message)
+        self.code = code
