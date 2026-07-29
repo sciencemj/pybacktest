@@ -330,6 +330,28 @@ def test_sma_repeated_large_values_never_overflow_prefix_accumulation(
     assert not np.isinf(result.column("sma")).any()
 
 
+@pytest.mark.parametrize("window", [1, 2])
+def test_sma_float64_max_is_warning_free_and_finite(window: int):
+    maximum = np.finfo(np.float64).max
+    dataset, instrument = one_instrument_dataset(
+        closes=[maximum, maximum],
+    )
+    builder = FeatureBuilder()
+    close = builder.source("close", instrument, "close")
+    builder.sma("sma", close, window=window)
+
+    with np.errstate(over="raise", invalid="raise"):
+        result = FeatureExecutor().execute(builder.plan(), dataset)
+
+    column = result.column("sma")
+    if window == 1:
+        assert column[0] == maximum
+    else:
+        assert np.isnan(column[0])
+    assert column[1] == maximum
+    assert not np.isinf(column).any()
+
+
 def test_sma_preserves_the_smallest_positive_subnormal_average():
     smallest = np.nextafter(np.float64(0), np.float64(1))
     dataset, instrument = one_instrument_dataset(

@@ -559,7 +559,7 @@ def _sma(
         absolute_bound = max_absolute * finite_count
         if (
             minimum_positive == 0.0
-            or minimum_positive >= np.spacing(absolute_bound)
+            or minimum_positive >= _finite_float64_spacing(absolute_bound)
         ):
             return _sma_float_prefix(values, finite, window)
 
@@ -623,9 +623,22 @@ def _first_unsafe_prefix_index(
         absolute_prefix += absolute_value
         if 0.0 < absolute_value < minimum_positive:
             minimum_positive = absolute_value
-        if minimum_positive < np.spacing(absolute_prefix):
+        if minimum_positive < _finite_float64_spacing(absolute_prefix):
             return index
     return len(values)
+
+
+def _finite_float64_spacing(value: float) -> float:
+    maximum = float(np.finfo(np.float64).max)
+    if value == maximum:
+        previous = float(
+            np.nextafter(
+                np.float64(maximum),
+                np.float64(0.0),
+            )
+        )
+        return maximum - previous
+    return float(np.spacing(value))
 
 
 def _sma_exact(
