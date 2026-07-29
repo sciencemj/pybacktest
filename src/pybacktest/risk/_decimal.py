@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from decimal import (
     MAX_EMAX,
     MIN_EMIN,
+    ROUND_DOWN,
     ROUND_HALF_EVEN,
     Context,
     Decimal,
@@ -12,6 +13,8 @@ from decimal import (
     InvalidOperation,
     localcontext,
 )
+from itertools import chain, repeat
+from math import gcd
 
 _ZERO = Decimal("0")
 _MIN_WORKING_PRECISION = 64
@@ -77,6 +80,79 @@ def exact_multiply(left: Decimal, right: Decimal) -> Decimal:
                 "exact multiplication exceeds working precision"
             )
         return result
+
+
+def floor_quantity_to_lot(
+    notional: Decimal,
+    price: Decimal,
+    lot_size: Decimal,
+) -> Decimal:
+    """Floor ``notional / price`` to a positive lot from original operands."""
+    if (
+        not notional.is_finite()
+        or not price.is_finite()
+        or not lot_size.is_finite()
+        or price <= _ZERO
+        or lot_size <= _ZERO
+    ):
+        raise InvalidOperation("lot-floor operands are invalid")
+    if notional == _ZERO:
+        return _ZERO
+
+    with decimal_context(
+        (notional, price, lot_size)
+    ) as arithmetic:
+        arithmetic.rounding = ROUND_DOWN
+        raw_quantity = notional / price
+        division_is_exact = not arithmetic.flags[Inexact]
+    if division_is_exact and is_aligned(raw_quantity, lot_size):
+        return raw_quantity
+
+    absolute_notional = notional.copy_abs()
+    notional_tuple = absolute_notional.as_tuple()
+    price_tuple = price.as_tuple()
+    lot_tuple = lot_size.as_tuple()
+    notional_exponent = notional_tuple.exponent
+    price_exponent = price_tuple.exponent
+    lot_exponent = lot_tuple.exponent
+    if (
+        not isinstance(notional_exponent, int)
+        or not isinstance(price_exponent, int)
+        or not isinstance(lot_exponent, int)
+    ):
+        raise InvalidOperation("lot-floor operands require finite exponents")
+    if (
+        len(notional_tuple.digits)
+        + len(price_tuple.digits)
+        + len(lot_tuple.digits)
+        > _MAX_WORKING_PRECISION
+    ):
+        raise InvalidOperation(
+            "lot-floor coefficients exceed working precision"
+        )
+
+    numerator = _coefficient(notional_tuple.digits)
+    denominator = _coefficient(
+        price_tuple.digits
+    ) * _coefficient(lot_tuple.digits)
+    common = gcd(numerator, denominator)
+    numerator //= common
+    denominator //= common
+    exponent_delta = (
+        notional_exponent - price_exponent - lot_exponent
+    )
+    quotient_digits = _floor_scaled_ratio(
+        numerator,
+        denominator,
+        exponent_delta,
+    )
+    whole_lots = Decimal((0, quotient_digits, 0))
+    quantity = exact_multiply(whole_lots, lot_size)
+    return (
+        quantity.copy_negate()
+        if notional_tuple.sign
+        else quantity
+    )
 
 
 def is_aligned(value: Decimal, increment: Decimal) -> bool:
@@ -164,10 +240,68 @@ def _trailing_zeros(digits: Sequence[int]) -> int:
     return count
 
 
+def _floor_scaled_ratio(
+    numerator: int,
+    denominator: int,
+    exponent_delta: int,
+) -> tuple[int, ...]:
+    numerator_digits = _integer_digits(numerator)
+    denominator_digits = _integer_digits(denominator)
+    if exponent_delta >= 0:
+        scaled_length = len(numerator_digits) + exponent_delta
+        if (
+            scaled_length - len(denominator_digits)
+            > _MAX_WORKING_PRECISION
+        ):
+            raise InvalidOperation(
+                "lot count exceeds working precision"
+            )
+        remainder = 0
+        quotient_digits: list[int] = []
+        for digit in chain(
+            numerator_digits,
+            repeat(0, exponent_delta),
+        ):
+            quotient_digit, remainder = divmod(
+                remainder * 10 + digit,
+                denominator,
+            )
+            if quotient_digit or quotient_digits:
+                quotient_digits.append(quotient_digit)
+                if (
+                    len(quotient_digits)
+                    > _MAX_WORKING_PRECISION
+                ):
+                    raise InvalidOperation(
+                        "lot count exceeds working precision"
+                    )
+        return tuple(quotient_digits or (0,))
+
+    decimal_shift = -exponent_delta
+    scaled_denominator_length = (
+        len(denominator_digits) + decimal_shift
+    )
+    if scaled_denominator_length > len(numerator_digits):
+        return (0,)
+    if scaled_denominator_length == len(numerator_digits):
+        scaled_denominator_digits = (
+            denominator_digits + (0,) * decimal_shift
+        )
+        if numerator_digits < scaled_denominator_digits:
+            return (0,)
+    scaled_denominator = denominator * 10**decimal_shift
+    return _integer_digits(numerator // scaled_denominator)
+
+
+def _integer_digits(value: int) -> tuple[int, ...]:
+    return tuple(int(digit) for digit in str(value))
+
+
 __all__ = [
     "decimal_context",
     "exact_add",
     "exact_multiply",
     "exact_subtract",
+    "floor_quantity_to_lot",
     "is_aligned",
 ]

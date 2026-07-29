@@ -1,7 +1,7 @@
 """Deterministic conversion of strategy intents into proposed orders."""
 
 from dataclasses import dataclass
-from decimal import ROUND_DOWN, Decimal, DecimalException, Inexact
+from decimal import Decimal, DecimalException
 from typing import overload
 
 from pybacktest.domain.errors import ConfigurationError
@@ -23,9 +23,9 @@ from pybacktest.domain.orders import (
 from pybacktest.ports.risk import RiskContext, SizedOrderIntent
 
 from ._decimal import (
-    decimal_context,
     exact_multiply,
     exact_subtract,
+    floor_quantity_to_lot,
     is_aligned,
 )
 
@@ -137,31 +137,11 @@ class DefaultOrderSizer:
         mark = mark_or_rejection
         try:
             notional = exact_multiply(equity, intent.weight)
-            with decimal_context(
-                (
-                    notional,
-                    mark.amount,
-                    instrument.lot_size,
-                )
-            ) as arithmetic:
-                arithmetic.rounding = ROUND_DOWN
-                raw_quantity = notional / mark.amount
-                if (
-                    not arithmetic.flags[Inexact]
-                    and is_aligned(
-                        raw_quantity,
-                        instrument.lot_size,
-                    )
-                ):
-                    target = raw_quantity
-                else:
-                    desired_lots = (
-                        raw_quantity / instrument.lot_size
-                    ).to_integral_value(rounding=ROUND_DOWN)
-                    target = exact_multiply(
-                        desired_lots,
-                        instrument.lot_size,
-                    )
+            target = floor_quantity_to_lot(
+                notional,
+                mark.amount,
+                instrument.lot_size,
+            )
             signed_quantity = exact_subtract(target, current)
         except DecimalException:
             return _rejected(

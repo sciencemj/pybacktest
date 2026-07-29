@@ -34,6 +34,7 @@ from tests.factories import (
     portfolio_snapshot,
     risk_context,
 )
+from tests.risk._oracles import fraction_decimal_lot_floor
 
 
 def snapshot(
@@ -971,3 +972,71 @@ def test_risk_evaluates_only_pending_proposed_orders(status: OrderStatus):
             max_position_weight=None,
             allow_short=True,
         ).evaluate(order, context())
+
+
+def test_risk_uses_the_original_ratio_at_hundred_decimal_lot_boundary():
+    base = aapl()
+    fine = Instrument(
+        id=base.id,
+        quote_currency="USD",
+        tick_size=Decimal("1"),
+        lot_size=Decimal("1E-100"),
+        timezone=base.timezone,
+    )
+    expected = fraction_decimal_lot_floor(1, 3, 100)
+
+    decision = LongShortRisk(
+        max_leverage=Decimal("1"),
+        max_position_weight=Decimal("1"),
+        allow_short=True,
+    ).evaluate(
+        proposed_order(
+            side=OrderSide.SELL,
+            quantity=expected,
+            item=fine,
+        ),
+        context(
+            portfolio=snapshot(cash="1", price="3", item=fine),
+            price=Money.usd("3"),
+            item=fine,
+        ),
+    )
+
+    assert decision.status is RiskStatus.PASSED
+    assert decision.final_quantity == Quantity.of(expected)
+    assert decision.codes == ()
+
+
+def test_risk_rejects_a_nonterminating_floor_beyond_work_bound():
+    base = aapl()
+    excessive = Instrument(
+        id=base.id,
+        quote_currency="USD",
+        tick_size=Decimal("1"),
+        lot_size=Decimal("1E-5000"),
+        timezone=base.timezone,
+    )
+
+    decision = LongShortRisk(
+        max_leverage=Decimal("1"),
+        max_position_weight=Decimal("1"),
+        allow_short=True,
+    ).evaluate(
+        proposed_order(
+            side=OrderSide.SELL,
+            quantity=Decimal("1E-5000"),
+            item=excessive,
+        ),
+        context(
+            portfolio=snapshot(
+                cash="1",
+                price="3",
+                item=excessive,
+            ),
+            price=Money.usd("3"),
+            item=excessive,
+        ),
+    )
+
+    assert decision.status is RiskStatus.REJECTED
+    assert decision.codes == ("invalid_risk_arithmetic",)

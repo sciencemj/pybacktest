@@ -1,7 +1,7 @@
 """Long/short portfolio risk decisions with stable constraint ordering."""
 
 from dataclasses import dataclass
-from decimal import ROUND_DOWN, Decimal, DecimalException, Inexact
+from decimal import Decimal, DecimalException
 
 from pybacktest.domain.errors import ConfigurationError
 from pybacktest.domain.instruments import Instrument, InstrumentId
@@ -23,6 +23,7 @@ from ._decimal import (
     exact_add,
     exact_multiply,
     exact_subtract,
+    floor_quantity_to_lot,
     is_aligned,
 )
 
@@ -369,20 +370,7 @@ def _lot_quantity(
     price: Decimal,
     lot_size: Decimal,
 ) -> Decimal:
-    with decimal_context(
-        (notional, price, lot_size)
-    ) as arithmetic:
-        arithmetic.rounding = ROUND_DOWN
-        raw_quantity = notional / price
-        if (
-            not arithmetic.flags[Inexact]
-            and is_aligned(raw_quantity, lot_size)
-        ):
-            return max(raw_quantity, _ZERO)
-        lots = (raw_quantity / lot_size).to_integral_value(
-            rounding=ROUND_DOWN
-        )
-    return exact_multiply(max(lots, _ZERO), lot_size)
+    return floor_quantity_to_lot(notional, price, lot_size)
 
 
 def _rejection(

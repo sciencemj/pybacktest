@@ -35,6 +35,7 @@ from tests.factories import (
     portfolio_snapshot,
     risk_context,
 )
+from tests.risk._oracles import fraction_decimal_lot_floor
 
 
 def snapshot(
@@ -437,6 +438,66 @@ def test_weight_sizing_widens_exponent_bounds_for_finite_result():
 
     assert isinstance(result, Order)
     assert result.quantity == Quantity.of("1E+1000000")
+
+
+def test_weight_sizing_floors_the_original_ratio_to_hundred_decimal_lots():
+    base = aapl()
+    fine = Instrument(
+        id=base.id,
+        quote_currency="USD",
+        tick_size=Decimal("1"),
+        lot_size=Decimal("1E-100"),
+        timezone=base.timezone,
+    )
+    expected = fraction_decimal_lot_floor(1, 3, 100)
+
+    result = DefaultOrderSizer().size(
+        TargetWeight(
+            instrument=fine.id,
+            weight=Decimal("1"),
+            reason=DecisionReason.of("exact_fraction_floor"),
+        ),
+        context(
+            portfolio=snapshot(cash="1", price="3", item=fine),
+            price=Money.usd("3"),
+            item=fine,
+        ),
+    )
+
+    assert isinstance(result, Order)
+    assert result.side is OrderSide.BUY
+    assert result.quantity == Quantity.of(expected)
+
+
+def test_weight_sizing_rejects_a_nonterminating_floor_beyond_work_bound():
+    base = aapl()
+    excessive = Instrument(
+        id=base.id,
+        quote_currency="USD",
+        tick_size=Decimal("1"),
+        lot_size=Decimal("1E-5000"),
+        timezone=base.timezone,
+    )
+
+    result = DefaultOrderSizer().size(
+        TargetWeight(
+            instrument=excessive.id,
+            weight=Decimal("1"),
+            reason=DecisionReason.of("excessive_fraction_floor"),
+        ),
+        context(
+            portfolio=snapshot(
+                cash="1",
+                price="3",
+                item=excessive,
+            ),
+            price=Money.usd("3"),
+            item=excessive,
+        ),
+    )
+
+    assert isinstance(result, OrderRejected)
+    assert result.reason.code == "invalid_sizing_arithmetic"
 
 
 def test_zero_target_flattens_without_inventing_one_share():
