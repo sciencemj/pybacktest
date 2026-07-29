@@ -1,5 +1,6 @@
 """Deterministic builders shared by Pybacktest tests."""
 
+from collections.abc import Collection, Mapping
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -18,7 +19,9 @@ from pybacktest.domain.orders import (
     OrderType,
     TimeInForce,
 )
+from pybacktest.domain.portfolio import PortfolioSnapshot, Position
 from pybacktest.domain.time import Timeframe
+from pybacktest.ports.risk import RiskContext
 
 BASE_DATETIME = datetime(2024, 1, 2, 14, 30, tzinfo=UTC)
 BASE_TIMESTAMP = np.datetime64("2024-01-02T14:30:00", "ns")
@@ -147,4 +150,135 @@ def order(
         submitted_at=submitted_at,
         active_from=submitted_at,
         reason=DecisionReason.of("test_order"),
+    )
+
+
+def portfolio_snapshot(
+    *,
+    cash: object = "10000",
+    positions: Mapping[InstrumentId, object] | None = None,
+    prices: Mapping[InstrumentId, object] | None = None,
+    currency: str = "USD",
+) -> PortfolioSnapshot:
+    """Return a reconciled marked snapshot with the supplied current cash."""
+    requested_positions = dict(positions or {})
+    requested_prices = dict(prices or {})
+    marks: dict[InstrumentId, Money] = {}
+    for instrument_id in requested_positions:
+        raw_mark = requested_prices.get(instrument_id, "100")
+        marks[instrument_id] = (
+            raw_mark
+            if isinstance(raw_mark, Money)
+            else Money.of(raw_mark, currency)
+        )
+    for instrument_id, raw_mark in requested_prices.items():
+        marks[instrument_id] = (
+            raw_mark
+            if isinstance(raw_mark, Money)
+            else Money.of(raw_mark, currency)
+        )
+
+    built_positions: dict[InstrumentId, Position] = {}
+    market_value = Decimal("0")
+    gross_exposure = Decimal("0")
+    for instrument_id, raw_quantity in requested_positions.items():
+        quantity = Quantity.of(raw_quantity)
+        mark = marks[instrument_id]
+        marked_value = quantity.value * mark.amount
+        market_value += marked_value
+        gross_exposure += abs(marked_value)
+        built_positions[instrument_id] = Position(
+            instrument=instrument_id,
+            quantity=quantity,
+            average_price=(
+                None if quantity.value == Decimal("0") else mark
+            ),
+            book_cost=Money.of(
+                abs(quantity.value) * mark.amount,
+                currency,
+            ),
+            realized_pnl=Money.of("0", currency),
+        )
+
+    current_cash = Money.of(cash, currency)
+    return PortfolioSnapshot(
+        timestamp=BASE_DATETIME,
+        cash=current_cash,
+        positions=built_positions,
+        realized_pnl=Money.of("0", currency),
+        unrealized_pnl=Money.of("0", currency),
+        total_fees=Money.of("0", currency),
+        market_value=Money.of(market_value, currency),
+        gross_exposure=Money.of(gross_exposure, currency),
+        equity=Money.of(current_cash.amount + market_value, currency),
+        valuation_prices=marks,
+        cash_events=(),
+    )
+
+
+def risk_context(
+    *,
+    snapshot: PortfolioSnapshot | None = None,
+    prices: Mapping[InstrumentId, object] | None = None,
+    instruments: Mapping[InstrumentId, Instrument] | None = None,
+    tradable: Collection[InstrumentId] | None = None,
+    order_id: OrderId | None = None,
+    submitted_at: datetime = BASE_DATETIME,
+    active_from: datetime | None = None,
+) -> RiskContext:
+    """Return deterministic current data and proposed-order identity."""
+    current_snapshot = snapshot or portfolio_snapshot()
+    requested_prices = (
+        dict(prices)
+        if prices is not None
+        else dict(current_snapshot.valuation_prices)
+    )
+    instrument_catalog = (
+        dict(instruments)
+        if instruments is not None
+        else {
+            instrument_id: instrument(
+                instrument_id.symbol,
+                venue=instrument_id.venue,
+            )
+            for instrument_id in {
+                *current_snapshot.positions,
+                *requested_prices,
+            }
+        }
+    )
+    if instruments is None and not instrument_catalog:
+        default = aapl()
+        instrument_catalog[default.id] = default
+    if prices is None and not requested_prices:
+        default_id = next(iter(instrument_catalog))
+        requested_prices[default_id] = "100"
+    normalized_prices = {
+        instrument_id: (
+            value
+            if isinstance(value, Money)
+            else Money.of(
+                value,
+                (
+                    instrument_catalog[instrument_id].quote_currency
+                    if instrument_id in instrument_catalog
+                    else current_snapshot.cash.currency
+                ),
+            )
+        )
+        for instrument_id, value in requested_prices.items()
+    }
+    return RiskContext(
+        snapshot=current_snapshot,
+        prices=normalized_prices,
+        instruments=instrument_catalog,
+        tradable=frozenset(
+            tradable
+            if tradable is not None
+            else instrument_catalog
+        ),
+        order_id=order_id
+        or OrderId.parse("order_" + "7" * 32),
+        submitted_at=submitted_at,
+        active_from=active_from or submitted_at + timedelta(days=1),
     )

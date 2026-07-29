@@ -370,6 +370,24 @@ def test_structured_events_have_codes_timestamps_and_typed_identities():
         events[0].code = "order.changed"  # type: ignore[misc]
 
 
+def test_order_rejected_carries_a_typed_machine_readable_reason():
+    rejection_reason = DecisionReason.of(
+        "missing_price",
+        instrument="XNAS:AAPL",
+    )
+
+    event = OrderRejected(
+        OrderId.new(),
+        AAPL,
+        NOW,
+        "current mark is unavailable",
+        reason=rejection_reason,
+    )
+
+    assert event.reason == rejection_reason
+    assert event.reason.code == "missing_price"
+
+
 def test_order_accepted_event_rejects_untyped_order_identity():
     with pytest.raises(ConfigurationError, match="order_id"):
         OrderAccepted("order_" + "a" * 32, AAPL, NOW)  # type: ignore[arg-type]

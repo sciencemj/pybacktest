@@ -95,12 +95,16 @@ class OrderRejected:
     timestamp: datetime
     code: EventCode = field(init=False, default=EventCode.ORDER_REJECTED)
     message: str | None = None
+    reason: DecisionReason = field(
+        default_factory=lambda: DecisionReason.of("unspecified_rejection")
+    )
 
     def __post_init__(self) -> None:
         _require_instance(self.order_id, OrderId, "order_id")
         _require_instance(self.instrument, InstrumentId, "instrument")
         _require_timestamp(self.timestamp)
         _require_message(self.message)
+        _require_instance(self.reason, DecisionReason, "reason")
 
 
 @dataclass(frozen=True, slots=True)
