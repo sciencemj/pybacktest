@@ -2,8 +2,16 @@
 
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 
 from .errors import ConfigurationError
+
+
+class TimeframeUnit(StrEnum):
+    """The supported typed units for a timeframe."""
+
+    MINUTE = "minute"
+    DAY = "day"
 
 
 def _require_aware(value: datetime) -> None:
@@ -37,12 +45,12 @@ class DateRange:
 class Timeframe:
     """A positive count of minute or day bars."""
 
-    unit: str
+    unit: TimeframeUnit
     count: int
 
     def __post_init__(self) -> None:
-        if self.unit not in {"minute", "day"}:
-            raise ConfigurationError("Timeframe unit must be 'minute' or 'day'.")
+        if not isinstance(self.unit, TimeframeUnit):
+            raise ConfigurationError("Timeframe unit must be a TimeframeUnit.")
         if (
             isinstance(self.count, bool)
             or not isinstance(self.count, int)
@@ -52,8 +60,8 @@ class Timeframe:
 
     @classmethod
     def minutes(cls, count: int) -> "Timeframe":
-        return cls(unit="minute", count=count)
+        return cls(unit=TimeframeUnit.MINUTE, count=count)
 
     @classmethod
     def days(cls, count: int) -> "Timeframe":
-        return cls(unit="day", count=count)
+        return cls(unit=TimeframeUnit.DAY, count=count)

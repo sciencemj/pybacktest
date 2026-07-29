@@ -66,14 +66,12 @@ class Money:
 
 @dataclass(frozen=True, slots=True)
 class Quantity:
-    """An immutable, non-negative finite absolute quantity."""
+    """An immutable finite quantity."""
 
     value: Decimal
 
     def __post_init__(self) -> None:
         decimal_value = decimal_from(self.value, "value")
-        if decimal_value < Decimal("0"):
-            raise ConfigurationError("Quantity value must be non-negative.")
         object.__setattr__(self, "value", decimal_value)
 
     @classmethod

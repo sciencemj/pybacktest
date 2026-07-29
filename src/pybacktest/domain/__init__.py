@@ -12,7 +12,7 @@ from .errors import (
 from .identifiers import FillId, OrderId, RunId
 from .instruments import Instrument, InstrumentId
 from .money import Money, Quantity
-from .time import DateRange, Timeframe
+from .time import DateRange, Timeframe, TimeframeUnit
 
 __all__ = [
     "AccountingInvariantError",
@@ -31,4 +31,5 @@ __all__ = [
     "Quantity",
     "RunId",
     "Timeframe",
+    "TimeframeUnit",
 ]

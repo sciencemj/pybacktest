@@ -9,7 +9,7 @@ from pybacktest.domain.errors import ConfigurationError
 from pybacktest.domain.identifiers import FillId, OrderId, RunId
 from pybacktest.domain.instruments import Instrument, InstrumentId
 from pybacktest.domain.money import Money, Quantity
-from pybacktest.domain.time import DateRange, Timeframe
+from pybacktest.domain.time import DateRange, Timeframe, TimeframeUnit
 
 
 def test_instrument_id_round_trips_canonical_form():
@@ -17,6 +17,14 @@ def test_instrument_id_round_trips_canonical_form():
     assert instrument_id.venue == "XNAS"
     assert instrument_id.symbol == "AAPL"
     assert str(instrument_id) == "XNAS:AAPL"
+
+
+def test_instrument_id_direct_construction_normalizes_canonical_parts():
+    direct = InstrumentId("xnas", "aapl")
+    parsed = InstrumentId.parse("xnas:aapl")
+
+    assert direct == parsed
+    assert str(direct) == "XNAS:AAPL"
 
 
 @pytest.mark.parametrize("value", ["XNAS", "XNAS:AAPL:OPTION", ":AAPL", "XNAS:"])
@@ -86,8 +94,13 @@ def test_quantity_quantizes_to_a_lot_multiple():
     assert quantity.value == Decimal("1.20")
 
 
-@pytest.mark.parametrize("value", ["-0.01", "NaN", "Infinity"])
-def test_quantity_rejects_negative_or_nonfinite_values(value: str):
+def test_quantity_quantizes_negative_values_toward_zero():
+    quantity = Quantity.of("-1.234").quantized(Decimal("0.01"))
+    assert quantity.value == Decimal("-1.23")
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity"])
+def test_quantity_rejects_nonfinite_values(value: str):
     with pytest.raises(ConfigurationError):
         Quantity.of(value)
 
@@ -117,17 +130,29 @@ def test_date_range_rejects_naive_or_empty_ranges():
         DateRange(aware_end, aware_start)
 
 
+def test_date_range_rejects_naive_query_timestamp():
+    period = DateRange(
+        datetime(2024, 1, 1, tzinfo=UTC),
+        datetime(2024, 2, 1, tzinfo=UTC),
+    )
+
+    with pytest.raises(ConfigurationError, match="timezone-aware"):
+        period.contains(datetime(2024, 1, 15))
+
+
 def test_timeframe_rejects_zero_count():
     with pytest.raises(ConfigurationError, match="count"):
         Timeframe.minutes(0)
 
 
 def test_timeframe_accepts_only_supported_positive_units():
-    assert Timeframe.minutes(5) == Timeframe("minute", 5)
-    assert Timeframe.days(1) == Timeframe("day", 1)
+    assert Timeframe.minutes(5) == Timeframe(TimeframeUnit.MINUTE, 5)
+    assert Timeframe.days(1) == Timeframe(TimeframeUnit.DAY, 1)
 
     with pytest.raises(ConfigurationError, match="unit"):
         Timeframe("hour", 1)
+    with pytest.raises(ConfigurationError, match="unit"):
+        Timeframe("minute", 1)
     with pytest.raises(ConfigurationError, match="count"):
         Timeframe.days(-1)
 

@@ -16,10 +16,17 @@ class InstrumentId:
     symbol: str
 
     def __post_init__(self) -> None:
-        if not self.venue or not self.symbol:
+        if (
+            not isinstance(self.venue, str)
+            or not isinstance(self.symbol, str)
+            or not self.venue
+            or not self.symbol
+        ):
             raise ConfigurationError("InstrumentId requires venue and symbol.")
         if ":" in self.venue or ":" in self.symbol:
             raise ConfigurationError("InstrumentId parts cannot contain ':'.")
+        object.__setattr__(self, "venue", self.venue.upper())
+        object.__setattr__(self, "symbol", self.symbol.upper())
 
     @classmethod
     def parse(cls, value: str) -> "InstrumentId":
