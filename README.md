@@ -213,7 +213,28 @@ from pathlib import Path
 
 import pandas as pd
 
-from pybacktest import DateRange, Instrument, InstrumentId, Timeframe
+from pybacktest import (
+    BacktestEngine,
+    BacktestRequest,
+    CalendarPolicy,
+    DateRange,
+    Instrument,
+    InstrumentId,
+    IntrabarPolicy,
+    LongShortRisk,
+    MetricsConfig,
+    Money,
+    MovingAverageCross,
+    NextBarOpenFill,
+    NoBorrowCost,
+    NoCommission,
+    NoLiquidityLimit,
+    NoSlippage,
+    Quantity,
+    SimulatedBrokerFactory,
+    SimulationRequest,
+    Timeframe,
+)
 from pybacktest.adapters.data import ParquetDataSource
 
 AAPL = InstrumentId.parse("XNAS:AAPL")
@@ -225,15 +246,17 @@ frame = pd.DataFrame(
                 "2024-01-02T14:30:00",
                 "2024-01-03T14:30:00",
                 "2024-01-04T14:30:00",
+                "2024-01-05T14:30:00",
+                "2024-01-08T14:30:00",
             ],
             utc=True,
         ),
-        "instrument": ["XNAS:AAPL", "XNAS:AAPL", "XNAS:AAPL"],
-        "open": [100.0, 100.0, 98.0],
-        "high": [101.0, 101.0, 103.0],
-        "low": [99.0, 97.0, 97.0],
-        "close": [100.0, 98.0, 102.0],
-        "volume": [1000.0, 1000.0, 1000.0],
+        "instrument": ["XNAS:AAPL"] * 5,
+        "open": [100.0, 100.0, 98.0, 104.0, 106.0],
+        "high": [101.0, 101.0, 103.0, 105.0, 107.0],
+        "low": [99.0, 97.0, 97.0, 103.0, 105.0],
+        "close": [100.0, 98.0, 102.0, 104.0, 106.0],
+        "volume": [1000.0] * 5,
     }
 )
 
@@ -253,16 +276,55 @@ with tempfile.TemporaryDirectory() as directory:
             )
         },
     )
-    dataset = source.load(
-        (AAPL,),
-        DateRange(
-            datetime(2024, 1, 1, tzinfo=UTC),
-            datetime(2024, 1, 5, tzinfo=UTC),
-        ),
-        Timeframe.days(1),
+    broker_factory = SimulatedBrokerFactory(
+        fill_model=NextBarOpenFill(intrabar_policy=IntrabarPolicy.CONSERVATIVE),
+        commission=NoCommission(),
+        slippage=NoSlippage(),
+        liquidity=NoLiquidityLimit(),
+        borrow_cost=NoBorrowCost(),
     )
+    risk_policy = LongShortRisk(
+        max_leverage=Decimal("1"),
+        max_position_weight=None,
+        allow_short=False,
+    )
+    engine = BacktestEngine(
+        data_source=source,
+        broker_factory=broker_factory,
+        risk_policy=risk_policy,
+    )
+    request = BacktestRequest(
+        strategy=MovingAverageCross(
+            fast=1,
+            slow=2,
+            long_weight=Decimal("0.5"),
+            flat_weight=Decimal("0"),
+            instrument=AAPL,
+        ),
+        simulation=SimulationRequest(
+            universe=(AAPL,),
+            period=DateRange(
+                datetime(2024, 1, 1, tzinfo=UTC),
+                datetime(2024, 1, 9, tzinfo=UTC),
+            ),
+            timeframe=Timeframe.days(1),
+            calendar=CalendarPolicy.union(),
+            initial_cash=Money.usd("10000"),
+            seed=7,
+            metrics=MetricsConfig(
+                risk_free_rate=Decimal("0"),
+                annualization_periods=252,
+            ),
+        ),
+    )
+    result = engine.run(request)
 
-assert len(dataset.timestamps) == 3
+assert len(result.market_timestamps) == 5
+assert len(result.orders) == 1
+assert result.fills[0].price == Money.usd("104.00")
+assert result.fills[0].quantity == Quantity.of("49")
+assert result.snapshots[-1].cash == Money.usd("4904.00")
+assert result.snapshots[-1].positions[AAPL].quantity == Quantity.of("49")
 ```
 
 ## Event timing
@@ -489,9 +551,10 @@ MovingAverageCross(fast=20, slow=60).build_features(FeatureBuilder())
 `result.explain_trade(order_id)` returns the exact recorded events for one
 order, in recorder order, so you can answer "why did this trade happen" without
 re-running anything. `LocalArtifactStore.write()` publishes a result atomically
-with a checksum manifest.
+with a checksum manifest. Artifact publication writes Parquet payloads and
+therefore requires PyArrow; install it with `uv add "pybacktest[parquet]"`.
 
-```python
+```python title="requires: pyarrow"
 import tempfile
 from datetime import UTC, datetime
 from decimal import Decimal
