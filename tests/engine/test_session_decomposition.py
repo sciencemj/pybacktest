@@ -315,6 +315,16 @@ def test_private_helper_import_dag_is_one_way(helper_name: str) -> None:
             set(),
         ),
         (
+            "from . import session as session_api",
+            {"pybacktest.engine.session"},
+            set(),
+        ),
+        (
+            "from .. import engine as engine_api",
+            {"pybacktest.engine"},
+            set(),
+        ),
+        (
             "from ._identity import _RunIdSequence",
             set(),
             {"_identity"},
@@ -335,6 +345,40 @@ def test_relative_imports_cannot_bypass_helper_graph_classification(
 
     assert forbidden == expected_forbidden
     assert private_edges == expected_private_edges
+
+
+def test_unapproved_relative_private_helper_edge_fails_exact_allowlist() -> None:
+    forbidden, private_edges = _classify_helper_imports(
+        ast.parse("from ._identity import _RunIdSequence")
+    )
+
+    assert forbidden == set()
+    assert private_edges == {"_identity"}
+    assert private_edges != _ALLOWED_HELPER_EDGES["_broker_guard"]
+
+
+@pytest.mark.parametrize(
+    "helper_name,source,expected_private_edges",
+    [
+        ("_loading", "from ._time import _as_np_datetime", {"_time"}),
+        ("_boundary", "from . import _time as time_helpers", {"_time"}),
+        (
+            "_manifest",
+            "from ._fingerprint import _fingerprint\nfrom . import _time",
+            {"_fingerprint", "_time"},
+        ),
+    ],
+)
+def test_approved_relative_helper_edges_match_exact_allowlist(
+    helper_name: str,
+    source: str,
+    expected_private_edges: set[str],
+) -> None:
+    forbidden, private_edges = _classify_helper_imports(ast.parse(source))
+
+    assert forbidden == set()
+    assert private_edges == expected_private_edges
+    assert private_edges == _ALLOWED_HELPER_EDGES[helper_name]
 
 
 def test_time_helpers_preserve_utc_and_nanosecond_precision_policy() -> None:
