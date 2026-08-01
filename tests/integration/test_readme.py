@@ -110,10 +110,10 @@ def _parse_blocks(text: str) -> tuple[_Block, ...]:
             delimiter = match.group("delimiter")
             info = match.group("info")
             stripped_info = info.strip()
+            opening_line = line_number
             if stripped_info == "python" or stripped_info.startswith("python "):
                 python_info = stripped_info.removeprefix("python")
                 source_lines = []
-                opening_line = line_number
             continue
 
         if _is_closing_fence(line, delimiter):
@@ -131,22 +131,31 @@ def _parse_blocks(text: str) -> tuple[_Block, ...]:
             opening_line = 0
             continue
 
-        if (
-            python_info is not None
-            and match is not None
-            and match.group("delimiter")[0] == delimiter[0]
-        ):
+        encountered_info = match.group("info").strip() if match is not None else ""
+        encountered_python = (
+            encountered_info == "python" or encountered_info.startswith("python ")
+        )
+        same_marker = match is not None and match.group("delimiter")[0] == delimiter[0]
+        if match is not None and (same_marker or encountered_python):
+            if encountered_python and python_info is None:
+                raise AssertionError(
+                    "README.md has a Python-looking fence "
+                    f"at line {line_number} inside the fence opened at line "
+                    f"{opening_line}."
+                )
+            kind = "Python fence" if python_info is not None else "fence"
             raise AssertionError(
-                "README.md has a malformed closing Python fence "
+                f"README.md has a malformed closing {kind} "
                 f"at line {line_number}; its opening fence is at line "
                 f"{opening_line}."
             )
         if python_info is not None:
             source_lines.append(line)
 
-    if delimiter is not None and python_info is not None:
+    if delimiter is not None:
+        kind = "Python fence" if python_info is not None else "fence"
         raise AssertionError(
-            f"README.md has an unclosed Python fence at line {opening_line}."
+            f"README.md has an unclosed {kind} at line {opening_line}."
         )
     return tuple(blocks)
 
@@ -239,6 +248,20 @@ def test_malformed_python_closing_fence_is_rejected(
 
     with pytest.raises(AssertionError, match="Python fence"):
         _blocks()
+
+
+def test_unclosed_non_python_fence_is_rejected() -> None:
+    markdown = "```text\nplain text\n"
+
+    with pytest.raises(AssertionError):
+        _parse_blocks(markdown)
+
+
+def test_non_python_fence_cannot_swallow_a_python_opening() -> None:
+    markdown = "```text\nplain text\n```python\nvalue = 1\n```\n"
+
+    with pytest.raises(AssertionError):
+        _parse_blocks(markdown)
 
 
 def test_parquet_example_runs_a_typed_backtest_with_a_real_fill() -> None:
