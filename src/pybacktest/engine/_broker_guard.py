@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
 from typing import cast
 from weakref import ref
 
-from pybacktest.domain.errors import AdapterContractError
-from pybacktest.domain.identifiers import OrderId
+from pybacktest.domain.errors import AdapterContractError, ConfigurationError
+from pybacktest.domain.identifiers import CashEventId, FillId, OrderId
 from pybacktest.domain.instruments import Instrument, InstrumentId
-from pybacktest.domain.orders import Order, OrderStatus, TimeInForce
+from pybacktest.domain.money import Money, Quantity
+from pybacktest.domain.orders import Order, OrderSide, OrderStatus, TimeInForce
+from pybacktest.domain.portfolio import CashEvent, CashEventCode
 from pybacktest.ports.broker import (
+    BorrowCostSource,
     Broker,
     BrokerEvent,
     FillIdSource,
@@ -185,6 +189,86 @@ def _snapshot_broker_events(broker_events: object) -> tuple[BrokerEvent, ...]:
             "broker events could not be read as a fixed sequence.",
             code="invalid_broker_events",
         ) from exc
+
+
+def _plan_borrow_cash_events(
+    broker_events: Sequence[BrokerEvent],
+    *,
+    broker: Broker,
+    position_quantities: Mapping[InstrumentId, Decimal],
+    submitted_orders: Mapping[OrderId, Order],
+    cash_event_ordinal: int,
+    cash_event_id: Callable[[int], CashEventId],
+) -> dict[FillId, CashEvent]:
+    """Project validated fills into incremental-short cash events."""
+    if not isinstance(broker, BorrowCostSource):
+        return {}
+
+    staged_positions = dict(position_quantities)
+    staged_orders = dict(submitted_orders)
+    planned: dict[FillId, CashEvent] = {}
+    for broker_event in broker_events:
+        previous_order = staged_orders[broker_event.order.id]
+        staged_orders[broker_event.order.id] = broker_event.order
+        if not isinstance(
+            broker_event,
+            (OrderFilledEvent, OrderPartiallyFilledEvent),
+        ):
+            continue
+
+        fill = broker_event.fill
+        before = staged_positions.get(fill.instrument, Decimal("0"))
+        signed_fill = (
+            fill.quantity.value
+            if fill.side is OrderSide.BUY
+            else fill.quantity.value.copy_negate()
+        )
+        try:
+            after = exact_add(before, signed_fill)
+            short_before = (
+                before.copy_negate() if before < Decimal("0") else Decimal("0")
+            )
+            short_after = after.copy_negate() if after < Decimal("0") else Decimal("0")
+            short_increase = exact_add(
+                short_after,
+                short_before.copy_negate(),
+            )
+        except ExactDecimalError as error:
+            raise ConfigurationError(
+                "borrow cost quantity exceeds the exact numeric range."
+            ) from error
+        staged_positions[fill.instrument] = after
+        if short_increase <= Decimal("0"):
+            continue
+
+        cost = broker.calculate_borrow_cost(
+            previous_order,
+            Quantity.of(short_increase),
+            fill.price,
+        )
+        _validate_borrow_cost(previous_order, cost)
+        if cost.amount == Decimal("0"):
+            continue
+        event = CashEvent(
+            id=cash_event_id(cash_event_ordinal + len(planned)),
+            timestamp=fill.timestamp,
+            amount=Money.of(cost.amount.copy_negate(), cost.currency),
+            code=CashEventCode.BORROW_FEE,
+        )
+        planned[fill.id] = event
+    return planned
+
+
+def _validate_borrow_cost(order: Order, cost: object) -> None:
+    if (
+        not isinstance(cost, Money)
+        or cost.currency != order.quote_currency
+        or not cost.amount.is_finite()
+        or cost.amount < Decimal("0")
+    ):
+        raise ConfigurationError(
+            "borrow cost must be nonnegative finite Money in the order quote currency."
+        )
 
 
 def _validate_broker_events(

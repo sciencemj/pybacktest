@@ -221,8 +221,18 @@ def _engine(dataset: MarketDataSet) -> BacktestEngine:
 
 @pytest.mark.performance
 def test_one_million_observations_stay_within_the_runtime_and_memory_budget() -> None:
+    assert INSTRUMENT_COUNT == 100
+    assert BAR_COUNT == 10_000
+    assert OBSERVATION_COUNT == 1_000_000
+
     instrument_ids = _instrument_ids()
     dataset = _dataset(instrument_ids)
+    assert len(dataset.series) == 100
+    assert all(len(series.timestamps) == 10_000 for series in dataset.series.values())
+    assert (
+        sum(len(series.timestamps) for series in dataset.series.values()) == 1_000_000
+    )
+
     engine = _engine(dataset)
     request = _request(instrument_ids)
 

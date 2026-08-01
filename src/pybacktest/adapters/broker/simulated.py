@@ -368,6 +368,15 @@ class SimulatedBroker:
         """Return an immutable snapshot, not the mutable backing mapping."""
         return MappingProxyType(dict(self._active_orders))
 
+    def calculate_borrow_cost(
+        self,
+        order: Order,
+        quantity: Quantity,
+        price: Money,
+    ) -> Money:
+        """Delegate one incremental-short charge to the run-owned model."""
+        return self._borrow_cost.calculate(order, quantity, price)
+
     @property
     def expires_day_orders(self) -> bool:
         """Report whether an explicit session-boundary provider is active."""

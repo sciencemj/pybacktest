@@ -75,15 +75,18 @@ def _deterministic_component_state(value: object) -> dict[str, object]:
 
 
 def _is_frozen_dataclass(value: object) -> bool:
+    """Return whether the runtime type is a frozen dataclass."""
     parameters = getattr(type(value), "__dataclass_params__", None)
     return bool(getattr(parameters, "frozen", False))
 
 
 def _instance_state(value: object) -> dict[str, object]:
+    """Return deterministic instance state under introspection invariants."""
     return deterministic_instance_state(value)
 
 
 def _type_identity(value: object) -> str:
+    """Return the module-qualified runtime type identity."""
     value_type = type(value)
     return f"{value_type.__module__}.{value_type.__qualname__}"
 

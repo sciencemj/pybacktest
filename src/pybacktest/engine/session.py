@@ -16,7 +16,6 @@ from pybacktest.application.provenance import (
     external_action_provenance,
 )
 from pybacktest.application.requests import SimulationRequest
-from pybacktest.data.calendar import CalendarMode
 from pybacktest.data.dataset import MarketDataSet
 from pybacktest.data.features import (
     FeatureExecutor,
@@ -31,7 +30,7 @@ from pybacktest.domain.errors import (
     PybacktestError,
 )
 from pybacktest.domain.events import OrderRejected
-from pybacktest.domain.identifiers import OrderId, RunId
+from pybacktest.domain.identifiers import FillId, OrderId, RunId
 from pybacktest.domain.instruments import InstrumentId
 from pybacktest.domain.market import BarView, MarketSlice
 from pybacktest.domain.money import Money
@@ -40,12 +39,16 @@ from pybacktest.domain.orders import (
     Order,
     OrderStatus,
 )
-from pybacktest.domain.portfolio import PortfolioSnapshot
+from pybacktest.domain.portfolio import (
+    CashEvent,
+    PortfolioSnapshot,
+)
 from pybacktest.engine._boundary import _FixedDatasetSessionBoundary
 from pybacktest.engine._broker_guard import (
     _BrokerCallOrigin,
     _claim_fresh_broker,
     _engine_active_orders,
+    _plan_borrow_cash_events,
     _require_broker_state_agreement,
     _snapshot_broker_events,
     _validate_active_orders,
@@ -238,6 +241,7 @@ class SimulationSession:
         self._last_marks: dict[InstrumentId, tuple[int, Money]] = {}
         self._submitted_orders: dict[OrderId, Order] = {}
         self._fill_ordinal = 0
+        self._cash_event_ordinal = 0
         self._result: BacktestResult | None = None
 
     @property
@@ -333,6 +337,7 @@ class SimulationSession:
         self._recorder = recorder
         self._submitted_orders = {}
         self._fill_ordinal = 0
+        self._cash_event_ordinal = 0
         self._index = 0
         self._reset = True
         active_orders = _validate_active_orders(
@@ -375,6 +380,7 @@ class SimulationSession:
         self._last_marks = {}
         self._submitted_orders = {}
         self._fill_ordinal = 0
+        self._cash_event_ordinal = 0
         self._result = None
 
     def strategy_context(self, observation: Observation) -> StrategyContext:
@@ -451,17 +457,21 @@ class SimulationSession:
             if next_market is None or next_marks is None or next_mark_state is None:
                 raise SessionStateError("next market preparation is incomplete.")
             current_timestamp = _as_datetime(next_market.timestamp)
-            recorder = self._required_recorder()
-            recorder.record_market_timestamp(current_timestamp)
             broker_events = self._required_broker().process(
                 next_market,
                 self._required_rng(),
             )
+            validated_events, borrow_events = self._prepare_broker_events(
+                broker_events,
+                at=current_timestamp,
+                origin=_BrokerCallOrigin.PROCESS,
+            )
+            recorder = self._required_recorder()
+            recorder.record_market_timestamp(current_timestamp)
             current_events.extend(
-                self._apply_broker_events(
-                    broker_events,
-                    at=current_timestamp,
-                    origin=_BrokerCallOrigin.PROCESS,
+                self._record_broker_events(
+                    validated_events,
+                    borrow_events,
                 )
             )
             self._require_held_position_marks(next_marks)
@@ -748,6 +758,23 @@ class SimulationSession:
     ) -> tuple[EngineEvent, ...]:
         # Validation order is the trust boundary: nothing below records or
         # mutates engine-owned state until every adapter view agrees.
+        events, borrow_events = self._prepare_broker_events(
+            broker_events,
+            at=at,
+            origin=origin,
+            cancelled_order_id=cancelled_order_id,
+        )
+        return self._record_broker_events(events, borrow_events)
+
+    def _prepare_broker_events(
+        self,
+        broker_events: Sequence[BrokerEvent],
+        *,
+        at: datetime,
+        origin: _BrokerCallOrigin,
+        cancelled_order_id: OrderId | None = None,
+    ) -> tuple[tuple[BrokerEvent, ...], dict[FillId, CashEvent]]:
+        """Validate one broker batch and stage all borrow cash events."""
         events = _snapshot_broker_events(broker_events)
         predicted = _validate_broker_events(
             events,
@@ -764,11 +791,24 @@ class SimulationSession:
             instruments=self._required_dataset().instruments,
         )
         _require_broker_state_agreement(predicted, active_orders)
-        return self._record_broker_events(events)
+        positions = self._required_ledger().snapshot().positions
+        borrow_events = _plan_borrow_cash_events(
+            events,
+            broker=self._required_broker(),
+            position_quantities={
+                instrument_id: position.quantity.value
+                for instrument_id, position in positions.items()
+            },
+            submitted_orders=self._submitted_orders,
+            cash_event_ordinal=self._cash_event_ordinal,
+            cash_event_id=self._required_ids().cash_event_id,
+        )
+        return events, borrow_events
 
     def _record_broker_events(
         self,
         broker_events: Sequence[BrokerEvent],
+        borrow_events: Mapping[FillId, CashEvent],
     ) -> tuple[EngineEvent, ...]:
         emitted: list[EngineEvent] = []
         recorder = self._required_recorder()
@@ -782,6 +822,10 @@ class SimulationSession:
                 recorder.record_order(broker_event.order)
                 recorder.record_fill(broker_event.fill)
                 self._required_ledger().apply_fill(broker_event.fill)
+                cash_event = borrow_events.get(broker_event.fill.id)
+                if cash_event is not None:
+                    self._required_ledger().apply_cash_event(cash_event)
+                    self._cash_event_ordinal += 1
                 code = (
                     "order.filled"
                     if isinstance(broker_event, OrderFilledEvent)
@@ -801,7 +845,12 @@ class SimulationSession:
                         message="Broker execution applied to the ledger.",
                     )
                 )
-                emitted.append(self._emit_accounting_event(broker_event))
+                emitted.append(
+                    self._emit_accounting_event(
+                        broker_event,
+                        cash_event=cash_event,
+                    )
+                )
             else:
                 recorder.record_order(broker_event.order)
                 code = (
@@ -823,24 +872,35 @@ class SimulationSession:
     def _emit_accounting_event(
         self,
         broker_event: OrderFilledEvent | OrderPartiallyFilledEvent,
+        *,
+        cash_event: CashEvent | None,
     ) -> EngineEvent:
         """Record the ledger effect that this fill produced."""
         snapshot = self._required_ledger().snapshot()
         position = snapshot.positions.get(broker_event.order.instrument)
+        details: dict[str, object] = {
+            "fill_id": str(broker_event.fill.id),
+            "cash": str(snapshot.cash.amount),
+            "position_quantity": str(
+                Decimal("0") if position is None else position.quantity.value
+            ),
+            "realized_pnl": str(snapshot.realized_pnl.amount),
+            "total_fees": str(snapshot.total_fees.amount),
+        }
+        if cash_event is not None:
+            details.update(
+                {
+                    "cash_event_id": str(cash_event.id),
+                    "cash_event_amount": str(cash_event.amount.amount),
+                    "cash_event_code": cash_event.code.value,
+                }
+            )
         return self._required_recorder().emit_event(
             timestamp=broker_event.fill.timestamp,
             stage=CausalStage.of("accounting"),
             code=EngineEventCode.of("ledger.applied"),
             order_id=broker_event.order.id,
-            details={
-                "fill_id": str(broker_event.fill.id),
-                "cash": str(snapshot.cash.amount),
-                "position_quantity": str(
-                    Decimal("0") if position is None else position.quantity.value
-                ),
-                "realized_pnl": str(snapshot.realized_pnl.amount),
-                "total_fees": str(snapshot.total_fees.amount),
-            },
+            details=details,
             message="Fill applied to the portfolio ledger.",
         )
 
@@ -884,11 +944,7 @@ class SimulationSession:
                     dataset.instruments[instrument_id].quote_currency,
                 ),
             )
-        max_staleness = (
-            0
-            if self._simulation.calendar.mode is CalendarMode.INTERSECTION
-            else self._simulation.calendar.max_staleness_bars
-        )
+        max_staleness = self._simulation.calendar.max_staleness_bars
         marks = MappingProxyType(
             {
                 instrument_id: price

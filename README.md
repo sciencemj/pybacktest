@@ -1,17 +1,19 @@
 # Pybacktest 0.2
 
-Pybacktest 0.2 is a deterministic, extensible Python backtesting engine. Every
-execution assumption — fill model, commission, slippage, liquidity, borrow
-cost, sizing, risk — is selected explicitly with a typed object. Nothing is
-chosen by a string or a hidden default, and the same request always produces
-the same result.
+Pybacktest 0.2 is a deterministic, extensible Python backtesting engine. Broker
+execution assumptions — fill model, commission, slippage, liquidity, and
+borrow cost — are selected explicitly with typed objects. When omitted, the
+engine supplies the documented typed defaults `DefaultOrderSizer()` and an
+unrestricted risk policy. Nothing is chosen by a behavior-selecting string,
+and the same request always produces the same result.
 
 Its approved design is documented in the
 [Pybacktest V2 architecture design](docs/superpowers/specs/2026-07-29-pybacktest-v2-architecture-design.md).
 
-**Pybacktest 1.x and its Streamlit UI are archived and unsupported.** They are
-not importable from this package, they receive no fixes, and none of their
-usage patterns carry over. The 0.2 surface below is the whole supported API.
+**Pybacktest V1 (0.1.x) and its Streamlit UI are archived and unsupported.**
+They are not importable from this package, they receive no fixes, and none of
+their usage patterns carry over. The 0.2 surface below is the whole supported
+API.
 
 Every Python block in this file is executed or compiled by
 `tests/integration/test_readme.py`, so the documentation cannot drift away from
@@ -30,9 +32,12 @@ Optional extras are additive and never required by the core engine.
 ```bash
 uv add "pybacktest[data]"      # PandasDataSource
 uv add "pybacktest[parquet]"   # ParquetDataSource (pandas + pyarrow)
-uv add "pybacktest[yfinance]"  # yfinance ingestion helpers
-uv add "pybacktest[plot]"      # matplotlib helpers
+uv add "pybacktest[yfinance]"  # third-party yfinance dependency convenience
+uv add "pybacktest[plot]"      # third-party matplotlib dependency convenience
 ```
+
+The `yfinance` and `plot` extras only install those third-party dependencies;
+this core provides no bundled yfinance ingestion adapter or plotting helper.
 
 Importing `pybacktest` never imports pandas, pyarrow, yfinance, matplotlib,
 Streamlit, an MCP package, or a reinforcement-learning package. The fixed data
@@ -371,7 +376,8 @@ you want different execution instructions.
 
 ## Execution models
 
-Every model is an explicit object with no hidden default.
+Every broker execution model is an explicit object with no hidden default.
+Sizing and risk have typed engine defaults, and both remain replaceable.
 
 | Concern | Models |
 | --- | --- |
@@ -380,8 +386,8 @@ Every model is an explicit object with no hidden default.
 | Slippage | `NoSlippage()`, `VolumeShareSlippage(impact_bps=...)` |
 | Liquidity | `NoLiquidityLimit()`, `VolumeParticipationLimit(max_volume_ratio=...)` |
 | Borrow | `NoBorrowCost()` |
-| Sizing | `DefaultOrderSizer()` |
-| Risk | `LongShortRisk(max_leverage=..., max_position_weight=..., allow_short=...)` |
+| Sizing | `DefaultOrderSizer()` (engine default) |
+| Risk | unrestricted policy (engine default), `LongShortRisk(max_leverage=..., max_position_weight=..., allow_short=...)` |
 
 `VolumeParticipationLimit` caps each bar's fill to a ratio of that bar's volume,
 which is what turns one 49-share order into a 20-share fill on a 400-share bar

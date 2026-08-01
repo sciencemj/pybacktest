@@ -127,7 +127,7 @@ class TargetWeight:
 
 @dataclass(frozen=True, slots=True)
 class TargetQuantity:
-    """Intent to request a positive quantity for an instrument."""
+    """Intent to set an instrument to a signed absolute position."""
 
     instrument: InstrumentId
     quantity: Quantity
@@ -135,7 +135,7 @@ class TargetQuantity:
 
     def __post_init__(self) -> None:
         _require_instance(self.instrument, InstrumentId, "instrument")
-        _require_positive_quantity(self.quantity, "quantity")
+        _require_instance(self.quantity, Quantity, "quantity")
         _require_reason(self.reason)
 
 

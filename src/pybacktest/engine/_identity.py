@@ -1,11 +1,11 @@
-"""Deterministic run-scoped order and fill identity allocation."""
+"""Deterministic run-scoped order, fill, and cash-event identities."""
 
 from __future__ import annotations
 
 from uuid import UUID, uuid5
 
 from pybacktest.domain.errors import ConfigurationError
-from pybacktest.domain.identifiers import FillId, OrderId, RunId
+from pybacktest.domain.identifiers import CashEventId, FillId, OrderId, RunId
 
 
 def _run_namespace(run_id: RunId) -> UUID:
@@ -21,6 +21,18 @@ def _derive_fill_id(namespace: UUID, sequence: int) -> FillId:
             code="invalid_fill_sequence",
         )
     return FillId.parse(f"fill_{uuid5(namespace, f'fill:{sequence}').hex}")
+
+
+def _derive_cash_event_id(namespace: UUID, sequence: int) -> CashEventId:
+    """Derive one cash-event identity from a run namespace and ordinal."""
+    if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
+        raise ConfigurationError(
+            "cash event sequence must be a nonnegative integer.",
+            code="invalid_cash_event_sequence",
+        )
+    return CashEventId.parse(
+        f"cash_event_{uuid5(namespace, f'cash_event:{sequence}').hex}"
+    )
 
 
 class _RunIdSequence:
@@ -42,6 +54,10 @@ class _RunIdSequence:
     def fill_id(self, sequence: int) -> FillId:
         """Return the deterministic fill identity at an explicit ordinal."""
         return _derive_fill_id(self._namespace, sequence)
+
+    def cash_event_id(self, sequence: int) -> CashEventId:
+        """Return the deterministic cash-event identity at an explicit ordinal."""
+        return _derive_cash_event_id(self._namespace, sequence)
 
 
 class _FillIdFacade:

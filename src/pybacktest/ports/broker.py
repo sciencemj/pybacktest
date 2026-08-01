@@ -160,7 +160,7 @@ class LiquidityModel(Protocol):
 
 @runtime_checkable
 class BorrowCostModel(Protocol):
-    """Calculate an explicit borrow charge in the execution quote currency."""
+    """Price only the fill portion that increases absolute short exposure."""
 
     def calculate(
         self,
@@ -168,7 +168,21 @@ class BorrowCostModel(Protocol):
         quantity: Quantity,
         price: Money,
     ) -> Money:
-        """Return a nonnegative borrow cost for the supplied position value."""
+        """Return a nonnegative charge for the supplied short-opening quantity."""
+        raise NotImplementedError
+
+
+@runtime_checkable
+class BorrowCostSource(Protocol):
+    """Expose one broker-owned, run-isolated borrow-cost model call."""
+
+    def calculate_borrow_cost(
+        self,
+        order: Order,
+        quantity: Quantity,
+        price: Money,
+    ) -> Money:
+        """Calculate cost for an engine-derived incremental short quantity."""
         raise NotImplementedError
 
 
@@ -280,6 +294,7 @@ class Broker(Protocol):
 
 __all__ = [
     "BorrowCostModel",
+    "BorrowCostSource",
     "Broker",
     "BrokerEvent",
     "BrokerRunContext",

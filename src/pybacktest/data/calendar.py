@@ -39,6 +39,13 @@ class CalendarPolicy:
             raise ConfigurationError(
                 "max_staleness_bars must be a nonnegative integer."
             )
+        if (
+            self.mode is CalendarMode.INTERSECTION
+            and self.max_staleness_bars != 0
+        ):
+            raise ConfigurationError(
+                "intersection calendars require max_staleness_bars=0."
+            )
 
     @classmethod
     def union(

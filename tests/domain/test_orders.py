@@ -27,7 +27,6 @@ from pybacktest.domain.orders import (
     OrderSide,
     OrderStatus,
     OrderType,
-    TargetQuantity,
     TargetWeight,
     TimeInForce,
 )
@@ -261,7 +260,6 @@ def test_order_boundary_models_reject_nonpositive_requested_quantities(
 ):
     reason = DecisionReason.of("risk_check")
     constructors = [
-        lambda: TargetQuantity(AAPL, quantity, reason),
         lambda: MarketOrderIntent(
             AAPL, OrderSide.BUY, quantity, TimeInForce.DAY, reason
         ),
