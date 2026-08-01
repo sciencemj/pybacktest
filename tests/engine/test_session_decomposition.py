@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 from datetime import UTC, datetime
+from importlib.util import resolve_name
 from pathlib import Path
 from uuid import UUID
 
@@ -184,6 +185,46 @@ _ALLOWED_HELPER_EDGES = {
 }
 
 
+def _classify_helper_imports(tree: ast.AST) -> tuple[set[str], set[str]]:
+    """Return forbidden imports and private-helper edges found in an AST."""
+    imported_modules: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_modules.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if node.level:
+                module = resolve_name(
+                    "." * node.level + module,
+                    "pybacktest.engine",
+                )
+            if node.module is None:
+                imported_modules.extend(
+                    module if alias.name == "*" else f"{module}.{alias.name}"
+                    for alias in node.names
+                )
+            else:
+                imported_modules.append(module)
+
+    forbidden = {
+        module
+        for module in imported_modules
+        if module
+        in {
+            "pybacktest",
+            "pybacktest.engine",
+            "pybacktest.engine.session",
+        }
+        or module.startswith("pybacktest.engine.session.")
+    }
+    private_edges = {
+        module.removeprefix("pybacktest.engine.").split(".", 1)[0]
+        for module in imported_modules
+        if module.startswith("pybacktest.engine._")
+    }
+    return forbidden, private_edges
+
+
 def test_literal_public_exports_remain_unchanged() -> None:
     assert pybacktest.__all__ == _ROOT_ALL
     assert engine_api.__all__ == _ENGINE_ALL
@@ -254,36 +295,46 @@ def test_private_helper_import_loads_no_optional_dependencies(
 def test_private_helper_import_dag_is_one_way(helper_name: str) -> None:
     helper_path = Path(session_api.__file__).resolve().parent / f"{helper_name}.py"
     tree = ast.parse(helper_path.read_text("utf-8"), filename=str(helper_path))
-    imported_modules: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported_modules.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            if node.level:
-                imported_modules.append("." * node.level + module)
-            else:
-                imported_modules.append(module)
-
-    forbidden = {
-        module
-        for module in imported_modules
-        if module
-        in {
-            "pybacktest",
-            "pybacktest.engine",
-            "pybacktest.engine.session",
-        }
-        or module.startswith("pybacktest.engine.session.")
-    }
-    private_edges = {
-        module.removeprefix("pybacktest.engine.").split(".", 1)[0]
-        for module in imported_modules
-        if module.startswith("pybacktest.engine._")
-    }
+    forbidden, private_edges = _classify_helper_imports(tree)
 
     assert forbidden == set()
     assert private_edges == _ALLOWED_HELPER_EDGES[helper_name]
+
+
+@pytest.mark.parametrize(
+    "source,expected_forbidden,expected_private_edges",
+    [
+        (
+            "from .session import SimulationSession",
+            {"pybacktest.engine.session"},
+            set(),
+        ),
+        (
+            "from . import session",
+            {"pybacktest.engine.session"},
+            set(),
+        ),
+        (
+            "from ._identity import _RunIdSequence",
+            set(),
+            {"_identity"},
+        ),
+        (
+            "from . import _time",
+            set(),
+            {"_time"},
+        ),
+    ],
+)
+def test_relative_imports_cannot_bypass_helper_graph_classification(
+    source: str,
+    expected_forbidden: set[str],
+    expected_private_edges: set[str],
+) -> None:
+    forbidden, private_edges = _classify_helper_imports(ast.parse(source))
+
+    assert forbidden == expected_forbidden
+    assert private_edges == expected_private_edges
 
 
 def test_time_helpers_preserve_utc_and_nanosecond_precision_policy() -> None:
