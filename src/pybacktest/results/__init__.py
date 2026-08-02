@@ -1,0 +1,62 @@
+"""Replayable immutable results, metrics, traces, and serialization."""
+
+from .explain import build_trade_explanation
+from .metrics import MetricsConfig, calculate_metrics
+from .models import (
+    ArtifactFile,
+    ArtifactManifest,
+    ArtifactRef,
+    BacktestResult,
+    CausalStage,
+    EngineEvent,
+    EngineEventCode,
+    FrozenMapping,
+    MetricMetadata,
+    MetricName,
+    MetricResult,
+    MissingPolicy,
+    ResultValidationError,
+    RunManifest,
+    RunWarning,
+    SummaryMetrics,
+    TradeExplanation,
+    UnknownTradeError,
+    WarningCode,
+)
+from .serialization import (
+    SerializationError,
+    calculate_replay_fingerprint,
+    canonical_json_bytes,
+    canonical_json_text,
+    to_canonical_data,
+)
+
+__all__ = [
+    "ArtifactFile",
+    "ArtifactManifest",
+    "ArtifactRef",
+    "BacktestResult",
+    "CausalStage",
+    "EngineEvent",
+    "EngineEventCode",
+    "FrozenMapping",
+    "MetricMetadata",
+    "MetricName",
+    "MetricResult",
+    "MetricsConfig",
+    "MissingPolicy",
+    "ResultValidationError",
+    "RunManifest",
+    "RunWarning",
+    "SerializationError",
+    "SummaryMetrics",
+    "TradeExplanation",
+    "UnknownTradeError",
+    "WarningCode",
+    "build_trade_explanation",
+    "calculate_metrics",
+    "calculate_replay_fingerprint",
+    "canonical_json_bytes",
+    "canonical_json_text",
+    "to_canonical_data",
+]
