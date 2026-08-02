@@ -867,16 +867,71 @@ assert result.manifest.strategy_identity == "docs.readme.BuyOnceThenHold"
 assert result.manifest.compiler_identity == "docs.readme.compiler.v1"
 ```
 
-## Building on top of the core
+## Roadmap
 
-Future MCP servers, AI strategy front ends, and reinforcement-learning projects
-are separate packages. They consume this core through its stable typed
-boundary — `SimulationRequest` and `BacktestRequest`, session `Observation`s,
-`StepResult`s, `OrderIntent` actions, `BacktestResult`, `RunManifest`, and
-persisted artifacts — and they never enter the engine's internals, add a
-dependency to it, or execute arbitrary code inside it. A generated strategy
-enters through the same request split as a handwritten one, with its own
-`ProvenanceDescriptor`.
+Pybacktest 0.2 core is complete. This roadmap is directional: it orders the
+work that is currently justified, but it does not promise release dates. Every
+extension remains a separate package that consumes the public typed API; no
+MCP, model, training, UI, or adapter dependency enters the core.
+
+### Next — Core readiness
+
+- [ ] Automate the supported Python matrix, core and optional-dependency tests,
+  Ruff, ty, executable README examples, and package-build checks in CI. Keep the
+  reference performance gate on a controlled manual or scheduled runner.
+- [ ] Remove inherited repository-wide formatting debt in a formatting-only
+  change, then enforce `ruff format --check` in CI.
+- [ ] Restore the intended dependency direction by moving engine-consumed
+  request and provenance contracts to a neutral layer with compatibility
+  re-exports.
+- [ ] Add reusable contract suites for data, broker, and artifact adapters.
+
+This stage is complete when every quality gate runs automatically and a new
+adapter can prove compatibility without copying implementation-specific tests.
+
+### Next project — StrategySpec and MCP
+
+- [ ] Revise the existing [StrategySpec plan](docs/superpowers/plans/2026-07-29-pybacktest-v2-strategy-spec.md)
+  and [MCP plan](docs/superpowers/plans/2026-07-29-pybacktest-v2-mcp.md) so they
+  produce separate consumer packages instead of modules inside the core.
+- [ ] Build StrategySpec first: versioned strict schemas, an allowlisted
+  component registry, semantic validation, an `eval`-free compiler, parity with
+  Python strategies, and risk-policy intersection.
+- [ ] After StrategySpec is stable, build a bounded local-stdio MCP server with
+  allowlisted datasets and components, request/run/artifact quotas, sanitized
+  failures, and no arbitrary code, URL, or filesystem-path execution.
+
+This stage is complete when both packages are independently installable, depend
+only on the public Pybacktest contract, and pass parity, quota, and security
+tests.
+
+### Later — Ecosystem and operations
+
+- [ ] Add standalone market-data adapters, including a real yfinance adapter.
+- [ ] Add standalone plotting/reporting and artifact-storage adapters; the
+  current `yfinance` and `plot` extras install dependencies but do not provide
+  these integrations.
+- [ ] Automate package publication, release notes, and compatibility checks for
+  the core and extension packages.
+
+Each item is complete only with a reusable contract test and an end-to-end
+example. Paper/live brokers, remote multi-user MCP hosting, and distributed
+execution remain unscheduled rather than implied commitments.
+
+### Research — AI training and reinforcement learning
+
+- [ ] Record reproducible experiment lineage across StrategySpec, validation
+  feedback, dataset/configuration fingerprints, metrics, artifacts, and
+  parent-child runs; export training trajectories without hidden model
+  reasoning.
+- [ ] Wrap `SimulationSession` in a separate Gym-style package with explicit
+  observation, action, and reward contracts and parity with engine results.
+- [ ] Explore walk-forward, parameter-sweep, and Monte Carlo workflows after the
+  preceding contracts are stable.
+
+Automatic FX accounting, derivatives, tick/order-book simulation, and other
+explicitly excluded domains stay outside the committed roadmap until they have
+separate approved designs.
 
 ## Performance
 
