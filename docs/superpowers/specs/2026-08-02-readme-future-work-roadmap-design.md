@@ -45,8 +45,9 @@ consumer packages before implementation.
   contracts needed by the engine to a neutral layer with compatibility
   re-exports.
 - Build reusable contract suites for data, broker, and artifact adapters.
-- Define completion as all gates running automatically and new adapters being
-  verifiable without copying implementation-specific tests.
+- Define completion as all routine gates running automatically, the reference
+  performance gate having a controlled manual or scheduled runner, and new
+  adapters being verifiable without copying implementation-specific tests.
 
 ### Next project — StrategySpec and MCP
 
@@ -86,11 +87,15 @@ consumer packages before implementation.
 - Keep automatic FX accounting, derivatives, tick/order-book simulation, and
   other explicitly excluded domains outside the committed roadmap until they
   receive separate designs.
+- Define completion as reproducible experiment lineage and exported
+  trajectories plus Gym-style wrapper parity with engine episode results.
 
 ## Accuracy and maintenance rules
 
 - Describe the roadmap as directional and do not assign dates or release
   promises.
+- Describe the planned 0.2 runtime scope as feature-complete without implying
+  that all readiness, dependency-direction, or ecosystem work is complete.
 - Distinguish verified repository gaps from exploratory ideas.
 - Do not present protocol `NotImplementedError` bodies as unfinished work.
 - Do not promote accepted low-value refactors, such as small private validator

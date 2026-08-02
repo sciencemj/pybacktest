@@ -54,10 +54,11 @@ Replace `## Building on top of the core` and its paragraphs with this content:
 ```markdown
 ## Roadmap
 
-Pybacktest 0.2 core is complete. This roadmap is directional: it orders the
-work that is currently justified, but it does not promise release dates. Every
-extension remains a separate package that consumes the public typed API; no
-MCP, model, training, UI, or adapter dependency enters the core.
+The planned Pybacktest 0.2 runtime scope is feature-complete. This roadmap is
+directional: it orders the work that is currently justified, but it does not
+promise release dates. Every extension remains a separate package that consumes
+the public typed API; no MCP, model, training, UI, or adapter dependency enters
+the core.
 
 ### Next — Core readiness
 
@@ -71,8 +72,10 @@ MCP, model, training, UI, or adapter dependency enters the core.
   re-exports.
 - [ ] Add reusable contract suites for data, broker, and artifact adapters.
 
-This stage is complete when every quality gate runs automatically and a new
-adapter can prove compatibility without copying implementation-specific tests.
+This stage is complete when every routine quality gate runs automatically, the
+reference performance gate has a controlled manual or scheduled runner, and a
+new adapter can prove compatibility without copying implementation-specific
+tests.
 
 ### Next project — StrategySpec and MCP
 
@@ -87,8 +90,8 @@ adapter can prove compatibility without copying implementation-specific tests.
   failures, and no arbitrary code, URL, or filesystem-path execution.
 
 This stage is complete when both packages are independently installable, depend
-only on the public Pybacktest contract, and pass parity, quota, and security
-tests.
+only on the public Pybacktest contract, and pass contract, parity, quota, and
+security tests.
 
 ### Later — Ecosystem and operations
 
@@ -113,6 +116,10 @@ execution remain unscheduled rather than implied commitments.
   observation, action, and reward contracts and parity with engine results.
 - [ ] Explore walk-forward, parameter-sweep, and Monte Carlo workflows after the
   preceding contracts are stable.
+
+This stage is complete when experiment lineage and exported trajectories are
+reproducible, and the Gym-style wrapper passes parity tests against engine
+episode results.
 
 Automatic FX accounting, derivatives, tick/order-book simulation, and other
 explicitly excluded domains stay outside the committed roadmap until they have
