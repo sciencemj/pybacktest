@@ -877,10 +877,10 @@ the core.
 
 ### Next — Core readiness
 
-- [ ] Automate the supported Python matrix, core and optional-dependency tests,
+- [x] Automate the supported Python matrix, core and optional-dependency tests,
   Ruff, ty, executable README examples, and package-build checks in CI. Keep the
   reference performance gate on a controlled manual or scheduled runner.
-- [ ] Remove inherited repository-wide formatting debt in a formatting-only
+- [x] Remove inherited repository-wide formatting debt in a formatting-only
   change, then enforce `ruff format --check` in CI.
 - [ ] Restore the intended dependency direction by moving engine-consumed
   request and provenance contracts to a neutral layer with compatibility
@@ -950,4 +950,31 @@ uv run python -m pytest -m performance benchmarks/test_engine_benchmark.py -q
 ```
 
 See [`benchmarks/README.md`](benchmarks/README.md) for the measured runtime,
-peak RSS, hardware, and the regression policy.
+peak RSS, hardware, and the regression policy. Because both budgets are
+machine-specific, CI never runs this gate automatically; dispatch the
+**Performance gate** workflow manually and choose a runner that matches the
+reference hardware.
+
+## Development
+
+[CI](.github/workflows/ci.yml) runs these gates on every push to `main` and
+every pull request:
+
+```bash
+uv run ruff check src tests benchmarks
+uv run ruff format --check src tests benchmarks
+uv run ty check src
+uv run python -m pytest -q  # includes the executable README examples
+uv build
+```
+
+The test suite runs on Python 3.11 through 3.14 with the optional pandas and
+pyarrow dependencies installed, and again on 3.11 and 3.14 without them, where
+tests that need an extra are skipped. The build job installs the wheel and the
+sdist into clean environments and imports the package.
+
+To keep the formatting-only commit out of `git blame`:
+
+```bash
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```

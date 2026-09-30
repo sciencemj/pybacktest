@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint and type check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - name: Ruff lint
+        run: uv run --locked ruff check src tests benchmarks
+      - name: Ruff format
+        run: uv run --locked ruff format --check src tests benchmarks
+      - name: ty
+        run: uv run --locked ty check src
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }}, optional deps)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      # The default suite includes tests/integration/test_readme.py, which
+      # executes every README example, including the pandas/pyarrow blocks.
+      - name: Test suite and README examples
+        run: uv run --locked python -m pytest -q
+
+  test-core:
+    name: Tests (Python ${{ matrix.python-version }}, core only)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - name: Test suite without optional dependencies
+        run: >-
+          uv run --locked --no-dev --with pytest --with hypothesis
+          python -m pytest -q
+
+  build:
+    name: Package build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - name: Build sdist and wheel
+        run: uv build
+      - name: Import installed wheel
+        run: >-
+          uv run --isolated --no-project --with dist/*.whl
+          python -c "import pybacktest; print(pybacktest.__version__)"
+      - name: Import installed sdist
+        run: >-
+          uv run --isolated --no-project --with dist/*.tar.gz
+          python -c "import pybacktest; print(pybacktest.__version__)"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
