@@ -109,7 +109,10 @@ never imported stays meaningful.
      `000660.KS`) can leave open or close outside `[low, high]`, which the
      core rejects;
    - rows with any NaN in OHLCV, or a non-positive low, are dropped; the
-     index is converted to UTC and then to naive `datetime64[ns]`;
+     index keeps each bar's exchange-local calendar date as a naive midnight
+     timestamp (converting to UTC would move bars east of UTC, such as
+     `005930.KS` at 00:00 KST, to the previous day and outside the requested
+     period);
    - one `BarSeries` per instrument, combined into a `MarketDataSet` with
      `Timeframe.days(1)`.
 5. **Calendar.** `CalendarPolicy.union()`, so instruments with different
