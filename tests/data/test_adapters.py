@@ -5,14 +5,16 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import numpy as np
-import pandas as pd
 import pytest
 
-from pybacktest.adapters.data.pandas import PandasDataSource
-from pybacktest.adapters.data.parquet import ParquetDataSource
 from pybacktest.domain.errors import AdapterContractError, DataValidationError
 from pybacktest.domain.instruments import Instrument, InstrumentId
 from pybacktest.domain.time import DateRange, Timeframe
+
+pd = pytest.importorskip("pandas")
+
+from pybacktest.adapters.data.pandas import PandasDataSource  # noqa: E402
+from pybacktest.adapters.data.parquet import ParquetDataSource  # noqa: E402
 
 AAPL = Instrument(
     id=InstrumentId.parse("XNAS:AAPL"),

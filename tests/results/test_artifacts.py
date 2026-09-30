@@ -10,7 +10,6 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import pyarrow.parquet as pq
 import pytest
 
 from pybacktest.adapters.artifacts import LocalArtifactStore
@@ -46,6 +45,8 @@ from pybacktest.results.models import (
     ResultValidationError,
     RunManifest,
 )
+
+pq = pytest.importorskip("pyarrow.parquet")
 
 _FILES = {
     "manifest.json",

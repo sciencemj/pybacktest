@@ -14,7 +14,6 @@ from decimal import (
 )
 from pathlib import Path
 
-import pyarrow.parquet as pq
 import pytest
 
 from pybacktest.adapters.artifacts import LocalArtifactStore
@@ -245,6 +244,7 @@ def test_result_rejects_beyond_supported_decimal_range_with_typed_error() -> Non
 def test_artifact_position_value_is_exact_under_hostile_ambient_context(
     tmp_path: Path,
 ) -> None:
+    pq = pytest.importorskip("pyarrow.parquet")
     quantity = Decimal("12345678901234567890")
     price = Decimal("98765432109876543210")
     with localcontext(Context(prec=100)):

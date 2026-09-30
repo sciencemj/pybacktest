@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import ClassVar
 
 import numpy as np
-import pyarrow.parquet as pq
 import pytest
 
 from pybacktest.adapters.artifacts.local import LocalArtifactStore
@@ -354,6 +353,7 @@ def test_cash_event_identity_and_replay_are_deterministic() -> None:
 
 
 def test_borrow_fee_cash_events_persist_in_artifact_rows(tmp_path: Path) -> None:
+    pq = pytest.importorskip("pyarrow.parquet")
     result = _run_partial_short()
     assert [event.amount for event in result.snapshots[-1].cash_events] == [
         Money.usd("-2"),
