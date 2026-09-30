@@ -53,12 +53,9 @@ class SimulationRequest:
                 code="empty_universe",
             )
         if not all(
-            isinstance(instrument_id, InstrumentId)
-            for instrument_id in copied_universe
+            isinstance(instrument_id, InstrumentId) for instrument_id in copied_universe
         ):
-            raise ConfigurationError(
-                "universe must contain only InstrumentId values."
-            )
+            raise ConfigurationError("universe must contain only InstrumentId values.")
         if len(set(copied_universe)) != len(copied_universe):
             raise ConfigurationError("universe instruments must be unique.")
         if not isinstance(period, DateRange):
@@ -66,12 +63,8 @@ class SimulationRequest:
         if not isinstance(timeframe, Timeframe):
             raise ConfigurationError("timeframe must be a Timeframe.")
         minimum_span = timedelta(
-            minutes=timeframe.count
-            if timeframe.unit is TimeframeUnit.MINUTE
-            else 0,
-            days=timeframe.count
-            if timeframe.unit is TimeframeUnit.DAY
-            else 0,
+            minutes=timeframe.count if timeframe.unit is TimeframeUnit.MINUTE else 0,
+            days=timeframe.count if timeframe.unit is TimeframeUnit.DAY else 0,
         )
         if period.end - period.start < minimum_span:
             raise ConfigurationError(
@@ -80,9 +73,7 @@ class SimulationRequest:
         if not isinstance(calendar, CalendarPolicy):
             raise ConfigurationError("calendar must be a CalendarPolicy.")
         if not isinstance(initial_cash, Money) or initial_cash.amount <= 0:
-            raise ConfigurationError(
-                "initial_cash must be positive Money."
-            )
+            raise ConfigurationError("initial_cash must be positive Money.")
         if (
             isinstance(seed, bool)
             or not isinstance(seed, int)
@@ -120,13 +111,9 @@ class BacktestRequest:
 
     def __post_init__(self) -> None:
         if not isinstance(self.strategy, Strategy):
-            raise ConfigurationError(
-                "strategy must implement the Strategy protocol."
-            )
+            raise ConfigurationError("strategy must implement the Strategy protocol.")
         if not isinstance(self.simulation, SimulationRequest):
-            raise ConfigurationError(
-                "simulation must be a SimulationRequest."
-            )
+            raise ConfigurationError("simulation must be a SimulationRequest.")
         if self.run_id is not None and not isinstance(self.run_id, RunId):
             raise ConfigurationError("run_id must be a RunId when provided.")
         if self.provenance is not None and not isinstance(

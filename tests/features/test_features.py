@@ -194,10 +194,14 @@ def test_feature_view_does_not_publish_full_future_columns():
     dataset, instrument = one_instrument_dataset(closes=[1, 2, 3])
     builder = FeatureBuilder()
     builder.source("close", instrument, "close")
-    view = FeatureExecutor().execute(
-        builder.plan(),
-        dataset,
-    ).view(dataset.timestamps[1])
+    view = (
+        FeatureExecutor()
+        .execute(
+            builder.plan(),
+            dataset,
+        )
+        .view(dataset.timestamps[1])
+    )
 
     with pytest.raises(AttributeError):
         _ = view.columns
@@ -268,10 +272,14 @@ def test_feature_view_has_no_positional_pattern_surface():
     dataset, instrument = one_instrument_dataset(closes=[1, 2])
     builder = FeatureBuilder()
     builder.source("close", instrument, "close")
-    view = FeatureExecutor().execute(
-        builder.plan(),
-        dataset,
-    ).view(dataset.timestamps[0])
+    view = (
+        FeatureExecutor()
+        .execute(
+            builder.plan(),
+            dataset,
+        )
+        .view(dataset.timestamps[0])
+    )
 
     def match_positionally(candidate: object) -> bool:
         match candidate:

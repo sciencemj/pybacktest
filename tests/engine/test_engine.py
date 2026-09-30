@@ -155,9 +155,7 @@ def _engine(dataset: MarketDataSet) -> BacktestEngine:
     return BacktestEngine(
         data_source=_StaticSource(dataset),
         broker_factory=SimulatedBrokerFactory(
-            fill_model=NextBarOpenFill(
-                intrabar_policy=IntrabarPolicy.CONSERVATIVE
-            ),
+            fill_model=NextBarOpenFill(intrabar_policy=IntrabarPolicy.CONSERVATIVE),
             commission=NoCommission(),
             slippage=NoSlippage(),
             liquidity=NoLiquidityLimit(),
@@ -249,16 +247,9 @@ def test_risk_adjustment_flows_through_broker_ledger_and_recorder() -> None:
     assert result.orders[0].quantity == Quantity.of("100")
     assert result.orders[0].filled_quantity == Quantity.of("100")
     assert result.fills[0].quantity == Quantity.of("100")
-    assert (
-        result.snapshots[-1].positions[instrument_id].quantity
-        == Quantity.of("100")
-    )
-    assert "order.adjusted" in {
-        event.code.value for event in result.events
-    }
-    assert "order.filled" in {
-        event.code.value for event in result.events
-    }
+    assert result.snapshots[-1].positions[instrument_id].quantity == Quantity.of("100")
+    assert "order.adjusted" in {event.code.value for event in result.events}
+    assert "order.filled" in {event.code.value for event in result.events}
 
 
 def test_cancel_intent_flows_through_sizer_broker_and_recorder() -> None:

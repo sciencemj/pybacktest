@@ -51,9 +51,7 @@ def normalize_timestamps(values: object) -> NDArray[np.datetime64]:
         if np.any(differences == np.timedelta64(0, "ns")):
             raise DataValidationError("timestamps cannot contain duplicates.")
         if np.any(differences < np.timedelta64(0, "ns")):
-            raise DataValidationError(
-                "timestamps must be strictly increasing."
-            )
+            raise DataValidationError("timestamps must be strictly increasing.")
     return freeze_array(normalized)
 
 
@@ -98,9 +96,7 @@ def normalize_ohlcv(
             "high must be greater than or equal to open and close."
         )
     if np.any(low_values > np.minimum(open_values, close_values)):
-        raise DataValidationError(
-            "low must be less than or equal to open and close."
-        )
+        raise DataValidationError("low must be less than or equal to open and close.")
 
     return (
         freeze_array(open_values),
@@ -118,9 +114,7 @@ def copy_instrument_mapping(
     try:
         copied = dict(instruments)
     except (TypeError, ValueError) as exc:
-        raise DataValidationError(
-            "instruments must be a mapping of metadata."
-        ) from exc
+        raise DataValidationError("instruments must be a mapping of metadata.") from exc
     if not copied:
         raise DataValidationError(
             "instrument metadata requires at least one instrument."
@@ -130,10 +124,7 @@ def copy_instrument_mapping(
             raise DataValidationError(
                 "instrument metadata keys must be InstrumentId values."
             )
-        if (
-            not isinstance(instrument, Instrument)
-            or instrument.id != instrument_id
-        ):
+        if not isinstance(instrument, Instrument) or instrument.id != instrument_id:
             raise DataValidationError(
                 "instrument metadata must be stored under its matching id."
             )
@@ -147,9 +138,7 @@ def _normalize_object_timestamps(
     for value in values:
         if isinstance(value, datetime):
             if value.tzinfo is None or value.utcoffset() is None:
-                raise DataValidationError(
-                    "datetime timestamps must be timezone-aware."
-                )
+                raise DataValidationError("datetime timestamps must be timezone-aware.")
             utc_value = value.astimezone(UTC).replace(tzinfo=None)
             normalized.append(np.datetime64(utc_value, "ns"))
         else:
@@ -169,13 +158,9 @@ def _normalize_float_array(
             copy=True,
         )
     except (TypeError, ValueError, OverflowError) as exc:
-        raise DataValidationError(
-            f"{name} must contain numeric values."
-        ) from exc
+        raise DataValidationError(f"{name} must contain numeric values.") from exc
     if normalized.ndim != 1:
-        raise DataValidationError(
-            f"{name} must be a one-dimensional array."
-        )
+        raise DataValidationError(f"{name} must be a one-dimensional array.")
     if not np.isfinite(normalized).all():
         raise DataValidationError("OHLCV values must be finite.")
     return normalized
@@ -186,8 +171,6 @@ def freeze_array(
 ) -> NDArray[_Scalar]:
     """Copy an array onto immutable bytes-backed storage."""
     immutable_bytes = values.tobytes(order="C")
-    frozen = np.frombuffer(immutable_bytes, dtype=values.dtype).reshape(
-        values.shape
-    )
+    frozen = np.frombuffer(immutable_bytes, dtype=values.dtype).reshape(values.shape)
     frozen.setflags(write=False)
     return frozen

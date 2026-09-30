@@ -50,9 +50,7 @@ class FeatureNode:
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip():
-            raise ConfigurationError(
-                "feature name must be a non-empty string."
-            )
+            raise ConfigurationError("feature name must be a non-empty string.")
         if self.operator not in ("source", "lag", "sma", "ema"):
             raise ConfigurationError(
                 "feature operator must belong to the closed graph."
@@ -63,21 +61,14 @@ class FeatureNode:
             raise ConfigurationError(
                 "feature inputs must be an immutable name sequence."
             ) from exc
-        if not all(
-            isinstance(name, str) and name.strip()
-            for name in inputs
-        ):
-            raise ConfigurationError(
-                "feature inputs must contain feature names."
-            )
+        if not all(isinstance(name, str) and name.strip() for name in inputs):
+            raise ConfigurationError("feature inputs must contain feature names.")
         if (
             isinstance(self.lookback, bool)
             or not isinstance(self.lookback, int)
             or self.lookback < 0
         ):
-            raise ConfigurationError(
-                "feature lookback must be a nonnegative integer."
-            )
+            raise ConfigurationError("feature lookback must be a nonnegative integer.")
         if self.operator == "source":
             if (
                 inputs
@@ -86,18 +77,14 @@ class FeatureNode:
                 or self.parameter is not None
                 or self.lookback != 0
             ):
-                raise ConfigurationError(
-                    "source feature metadata is invalid."
-                )
+                raise ConfigurationError("source feature metadata is invalid.")
         else:
             if (
                 len(inputs) != 1
                 or self.instrument is not None
                 or self.field is not None
             ):
-                raise ConfigurationError(
-                    "derived feature metadata is invalid."
-                )
+                raise ConfigurationError("derived feature metadata is invalid.")
             _require_feature_parameter(
                 self.parameter,
                 "feature",
@@ -115,9 +102,7 @@ class FeaturePlan:
         try:
             nodes = tuple(self.nodes)
         except TypeError as exc:
-            raise ConfigurationError(
-                "feature plan nodes must be a sequence."
-            ) from exc
+            raise ConfigurationError("feature plan nodes must be a sequence.") from exc
         seen: dict[str, FeatureNode] = {}
         for node in nodes:
             if not isinstance(node, FeatureNode):
@@ -135,21 +120,15 @@ class FeaturePlan:
             if node.operator != "source":
                 input_node = seen[node.inputs[0]]
                 if node.operator == "lag":
-                    expected_lookback = (
-                        input_node.lookback + cast(int, node.parameter)
-                    )
+                    expected_lookback = input_node.lookback + cast(int, node.parameter)
                 elif node.operator == "sma":
                     expected_lookback = (
-                        input_node.lookback
-                        + cast(int, node.parameter)
-                        - 1
+                        input_node.lookback + cast(int, node.parameter) - 1
                     )
                 else:
                     expected_lookback = input_node.lookback
                 if node.lookback != expected_lookback:
-                    raise ConfigurationError(
-                        "feature lookback recurrence is invalid."
-                    )
+                    raise ConfigurationError("feature lookback recurrence is invalid.")
             seen[node.name] = node
         object.__setattr__(self, "nodes", nodes)
 
@@ -171,9 +150,7 @@ class FeatureBuilder:
         """Declare an OHLCV source column."""
         self._require_available_name(name)
         if not isinstance(instrument, InstrumentId):
-            raise ConfigurationError(
-                "feature instrument must be an InstrumentId."
-            )
+            raise ConfigurationError("feature instrument must be an InstrumentId.")
         if field not in OHLCV_FIELDS:
             raise ConfigurationError(f"unknown source field: {field!r}.")
         node = FeatureNode(
@@ -260,20 +237,13 @@ class FeatureBuilder:
 
     def _require_available_name(self, name: str) -> None:
         if not isinstance(name, str) or not name.strip():
-            raise ConfigurationError(
-                "feature name must be a non-empty string."
-            )
+            raise ConfigurationError("feature name must be a non-empty string.")
         if name in self._nodes:
             raise ConfigurationError(f"duplicate feature name: {name!r}.")
 
     def _require_owned_node(self, node: FeatureNode) -> FeatureNode:
-        if (
-            not isinstance(node, FeatureNode)
-            or self._nodes.get(node.name) is not node
-        ):
-            raise ConfigurationError(
-                "feature node belongs to a different builder."
-            )
+        if not isinstance(node, FeatureNode) or self._nodes.get(node.name) is not node:
+            raise ConfigurationError("feature node belongs to a different builder.")
         return node
 
     @staticmethod
@@ -403,9 +373,7 @@ class FeatureSet:
         try:
             return self.columns[name]
         except KeyError as exc:
-            raise ConfigurationError(
-                f"unknown feature column: {name!r}."
-            ) from exc
+            raise ConfigurationError(f"unknown feature column: {name!r}.") from exc
 
     def view(self, timestamp: np.datetime64) -> "FeatureView":
         """Pin a feature view to one timestamp on this feature clock."""
@@ -416,14 +384,9 @@ class FeatureSet:
         try:
             normalized = timestamp.astype("datetime64[ns]")
         except (AttributeError, TypeError, ValueError) as exc:
-            raise ConfigurationError(
-                "feature view timestamp must be valid."
-            ) from exc
+            raise ConfigurationError("feature view timestamp must be valid.") from exc
         index = int(np.searchsorted(self.timestamps, normalized))
-        if (
-            index >= len(self.timestamps)
-            or self.timestamps[index] != normalized
-        ):
+        if index >= len(self.timestamps) or self.timestamps[index] != normalized:
             raise ConfigurationError(
                 "feature view timestamp is outside the feature clock."
             )
@@ -462,9 +425,7 @@ class FeatureView:
             or _index < 0
             or _timestamp is None
         ):
-            raise TypeError(
-                "FeatureView instances are created by FeatureSet.view()."
-            )
+            raise TypeError("FeatureView instances are created by FeatureSet.view().")
         object.__setattr__(self, "_FeatureView__columns", _columns)
         object.__setattr__(self, "_FeatureView__index", _index)
         object.__setattr__(self, "_FeatureView__timestamp", _timestamp)
@@ -494,26 +455,17 @@ class FeatureView:
 
     def at(self, name: str, offset: int = 0) -> float:
         """Read at or before the pinned clock position."""
-        if (
-            isinstance(offset, bool)
-            or not isinstance(offset, int)
-        ):
+        if isinstance(offset, bool) or not isinstance(offset, int):
             raise ConfigurationError("feature offset must be an integer.")
         if offset > 0:
-            raise LookaheadViolation(
-                "positive feature offsets would read future data."
-            )
+            raise LookaheadViolation("positive feature offsets would read future data.")
         resolved = self.__index + offset
         if resolved < 0:
-            raise ConfigurationError(
-                "feature offset precedes the available history."
-            )
+            raise ConfigurationError("feature offset precedes the available history.")
         try:
             return float(self.__columns[name][resolved])
         except KeyError as exc:
-            raise ConfigurationError(
-                f"unknown feature column: {name!r}."
-            ) from exc
+            raise ConfigurationError(f"unknown feature column: {name!r}.") from exc
 
 
 def _lag(
@@ -550,16 +502,11 @@ def _sma(
     absolute_values = np.abs(values[finite])
     max_absolute = float(np.max(absolute_values))
     positive_values = absolute_values[absolute_values > 0]
-    minimum_positive = (
-        float(np.min(positive_values))
-        if len(positive_values)
-        else 0.0
-    )
+    minimum_positive = float(np.min(positive_values)) if len(positive_values) else 0.0
     if max_absolute <= np.finfo(np.float64).max / finite_count:
         absolute_bound = max_absolute * finite_count
-        if (
-            minimum_positive == 0.0
-            or minimum_positive >= _finite_float64_spacing(absolute_bound)
+        if minimum_positive == 0.0 or minimum_positive >= _finite_float64_spacing(
+            absolute_bound
         ):
             return _sma_float_prefix(values, finite, window)
 
@@ -573,7 +520,7 @@ def _sma(
     )
     exact_start = max(0, switch_index - window + 1)
     exact_tail = _sma_exact(values[exact_start:], window)
-    result[switch_index:] = exact_tail[switch_index - exact_start:]
+    result[switch_index:] = exact_tail[switch_index - exact_start :]
     return result
 
 
@@ -603,7 +550,7 @@ def _sma_float_prefix(
     rolling_sums = sums[window:] - sums[:-window]
     rolling_counts = counts[window:] - counts[:-window]
     valid = rolling_counts == window
-    result[window - 1:][valid] = rolling_sums[valid] / window
+    result[window - 1 :][valid] = rolling_sums[valid] / window
     return result
 
 
@@ -665,9 +612,7 @@ def _sma_exact(
 
 def _float64_subnormal_units(value: np.float64) -> int:
     numerator, denominator = float(value).as_integer_ratio()
-    return numerator * (
-        _FLOAT64_SUBNORMAL_DENOMINATOR // denominator
-    )
+    return numerator * (_FLOAT64_SUBNORMAL_DENOMINATOR // denominator)
 
 
 def _ema(

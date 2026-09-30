@@ -56,8 +56,7 @@ class ParquetDataSource:
             from pyarrow import dataset as pyarrow_dataset
         except ImportError as exc:
             raise AdapterContractError(
-                "ParquetDataSource requires the optional 'pyarrow' "
-                "dependency.",
+                "ParquetDataSource requires the optional 'pyarrow' dependency.",
                 code="optional_dependency_missing",
             ) from exc
 

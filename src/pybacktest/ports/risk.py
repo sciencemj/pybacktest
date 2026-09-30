@@ -54,20 +54,15 @@ class RiskContext:
 
     def __post_init__(self) -> None:
         if not isinstance(self.snapshot, PortfolioSnapshot):
-            raise ConfigurationError(
-                "snapshot must be a domain PortfolioSnapshot."
-            )
+            raise ConfigurationError("snapshot must be a domain PortfolioSnapshot.")
         if not isinstance(self.prices, Mapping):
             raise ConfigurationError("prices must be a mapping.")
         copied_prices = dict(self.prices)
         if not all(
-            isinstance(instrument_id, InstrumentId)
-            and isinstance(price, Money)
+            isinstance(instrument_id, InstrumentId) and isinstance(price, Money)
             for instrument_id, price in copied_prices.items()
         ):
-            raise ConfigurationError(
-                "prices must map InstrumentId to Money."
-            )
+            raise ConfigurationError("prices must map InstrumentId to Money.")
         if not isinstance(self.instruments, Mapping):
             raise ConfigurationError("instruments must be a mapping.")
         copied_instruments = dict(self.instruments)
@@ -87,28 +82,22 @@ class RiskContext:
                     "price instrument must exist in the instrument catalog."
                 )
             if price.amount <= Decimal("0"):
-                raise ConfigurationError(
-                    "prices must contain positive Money values."
-                )
+                raise ConfigurationError("prices must contain positive Money values.")
             if price.currency != instrument.quote_currency:
                 raise ConfigurationError(
                     "price currency must match the instrument quote currency."
                 )
-        if (
-            isinstance(self.tradable, (str, bytes, bytearray))
-            or not isinstance(self.tradable, Collection)
+        if isinstance(self.tradable, (str, bytes, bytearray)) or not isinstance(
+            self.tradable, Collection
         ):
             raise ConfigurationError(
                 "tradable must be a collection of InstrumentId values."
             )
         copied_tradable = frozenset(self.tradable)
         if not all(
-            isinstance(instrument_id, InstrumentId)
-            for instrument_id in copied_tradable
+            isinstance(instrument_id, InstrumentId) for instrument_id in copied_tradable
         ):
-            raise ConfigurationError(
-                "tradable must contain InstrumentId values."
-            )
+            raise ConfigurationError("tradable must contain InstrumentId values.")
         if not copied_tradable.issubset(copied_instruments):
             raise ConfigurationError(
                 "tradable instruments must exist in the instrument catalog."
@@ -118,19 +107,14 @@ class RiskContext:
         submitted_at = _aware_datetime(self.submitted_at, "submitted_at")
         active_from = _aware_datetime(self.active_from, "active_from")
         if active_from < submitted_at:
-            raise ConfigurationError(
-                "active_from cannot precede submitted_at."
-            )
+            raise ConfigurationError("active_from cannot precede submitted_at.")
         if (
             self.snapshot.timestamp is not None
             and self.snapshot.timestamp > submitted_at
         ):
-            raise ConfigurationError(
-                "snapshot timestamp cannot follow submitted_at."
-            )
-        if (
-            isinstance(self.active_orders, (str, bytes, bytearray))
-            or not isinstance(self.active_orders, Sequence)
+            raise ConfigurationError("snapshot timestamp cannot follow submitted_at.")
+        if isinstance(self.active_orders, (str, bytes, bytearray)) or not isinstance(
+            self.active_orders, Sequence
         ):
             raise ConfigurationError(
                 "active_orders must be a sequence of active Order values."
@@ -152,9 +136,7 @@ class RiskContext:
                 "active_orders must contain catalog-backed active orders."
             )
         if len({order.id for order in active_orders}) != len(active_orders):
-            raise ConfigurationError(
-                "active_orders must contain unique order IDs."
-            )
+            raise ConfigurationError("active_orders must contain unique order IDs.")
         object.__setattr__(
             self,
             "prices",
@@ -190,44 +172,29 @@ class RiskDecision:
     def __post_init__(self) -> None:
         if not isinstance(self.status, RiskStatus):
             raise ConfigurationError("status must be a RiskStatus.")
-        if (
-            not isinstance(self.original_quantity, Quantity)
-            or self.original_quantity.value <= Decimal("0")
-        ):
-            raise ConfigurationError(
-                "original_quantity must be a positive Quantity."
-            )
-        if (
-            not isinstance(self.final_quantity, Quantity)
-            or self.final_quantity.value < Decimal("0")
-        ):
-            raise ConfigurationError(
-                "final_quantity must be a non-negative Quantity."
-            )
-        if (
-            isinstance(self.codes, (str, bytes, bytearray))
-            or not isinstance(self.codes, Sequence)
+        if not isinstance(
+            self.original_quantity, Quantity
+        ) or self.original_quantity.value <= Decimal("0"):
+            raise ConfigurationError("original_quantity must be a positive Quantity.")
+        if not isinstance(
+            self.final_quantity, Quantity
+        ) or self.final_quantity.value < Decimal("0"):
+            raise ConfigurationError("final_quantity must be a non-negative Quantity.")
+        if isinstance(self.codes, (str, bytes, bytearray)) or not isinstance(
+            self.codes, Sequence
         ):
             raise ConfigurationError("codes must be a sequence of strings.")
         copied_codes = tuple(self.codes)
-        if (
-            not all(
-                isinstance(code, str) and code.strip()
-                for code in copied_codes
-            )
-            or len(set(copied_codes)) != len(copied_codes)
-        ):
-            raise ConfigurationError(
-                "codes must contain unique non-empty strings."
-            )
+        if not all(
+            isinstance(code, str) and code.strip() for code in copied_codes
+        ) or len(set(copied_codes)) != len(copied_codes):
+            raise ConfigurationError("codes must contain unique non-empty strings.")
         if not isinstance(self.message, str) or not self.message.strip():
             raise ConfigurationError("message must be a non-empty string.")
 
         original = self.original_quantity.value
         final = self.final_quantity.value
-        if self.status is RiskStatus.PASSED and (
-            final != original or copied_codes
-        ):
+        if self.status is RiskStatus.PASSED and (final != original or copied_codes):
             raise ConfigurationError(
                 "PASSED decisions must preserve quantity without codes."
             )
@@ -235,8 +202,7 @@ class RiskDecision:
             not Decimal("0") < final < original or not copied_codes
         ):
             raise ConfigurationError(
-                "ADJUSTED decisions require a smaller positive quantity "
-                "and codes."
+                "ADJUSTED decisions require a smaller positive quantity and codes."
             )
         if self.status is RiskStatus.REJECTED and (
             final != Decimal("0") or not copied_codes

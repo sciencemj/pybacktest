@@ -190,9 +190,7 @@ def test_recorder_fill_aggregation_ignores_hostile_ambient_context() -> None:
     total = Decimal("1" + "0" * 49 + "1")
     recorder = RunRecorder(manifest=_manifest(), metrics_config=_CONFIG)
     recorder.record_market_timestamp(_BASE)
-    recorder.record_order(
-        _order(total, status=OrderStatus.ACCEPTED, filled="0")
-    )
+    recorder.record_order(_order(total, status=OrderStatus.ACCEPTED, filled="0"))
     first = _fill(1, quantity=large)
     second = _fill(2, quantity="1")
     first = Fill(
@@ -287,9 +285,7 @@ def test_artifact_position_value_is_exact_under_hostile_ambient_context(
     with localcontext(_hostile_context(1)):
         ref = LocalArtifactStore(tmp_path / "artifacts").write(result)
 
-    rows = pq.read_table(
-        Path(ref.path) / "positions.parquet"
-    ).to_pylist()
+    rows = pq.read_table(Path(ref.path) / "positions.parquet").to_pylist()
     assert rows[0]["market_value"] == str(market_value)
 
 
@@ -346,8 +342,7 @@ def test_metrics_isolate_beyond_context_range_as_typed_warnings() -> None:
     )
 
     assert all(
-        result.value is None or result.value.is_finite()
-        for result in metrics.results
+        result.value is None or result.value.is_finite() for result in metrics.results
     )
     assert any(
         warning.metric is MetricName.TOTAL_RETURN

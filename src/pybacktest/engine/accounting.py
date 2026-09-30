@@ -33,9 +33,7 @@ class PortfolioLedger:
         try:
             normalized_currency = normalize_currency(base_currency)
         except ConfigurationError as error:
-            raise AccountingInvariantError(
-                "base currency is invalid."
-            ) from error
+            raise AccountingInvariantError("base currency is invalid.") from error
         if not isinstance(initial_cash, Money):
             raise AccountingInvariantError("initial cash must be Money.")
         if initial_cash.currency != normalized_currency:
@@ -43,13 +41,9 @@ class PortfolioLedger:
                 "initial cash currency must match the base currency."
             )
         if initial_cash.amount < _ZERO:
-            raise AccountingInvariantError(
-                "initial cash cannot be negative."
-            )
+            raise AccountingInvariantError("initial cash cannot be negative.")
         if not isinstance(instruments, Mapping):
-            raise AccountingInvariantError(
-                "instrument catalog must be a mapping."
-            )
+            raise AccountingInvariantError("instrument catalog must be a mapping.")
         copied_catalog = dict(instruments)
         for instrument_id, instrument in copied_catalog.items():
             if (
@@ -92,9 +86,7 @@ class PortfolioLedger:
         """Validate, reconcile, and atomically apply one execution."""
         instrument = self._validate_fill(fill)
         previous = self._positions.get(fill.instrument)
-        old_quantity = (
-            previous.quantity.value if previous is not None else _ZERO
-        )
+        old_quantity = previous.quantity.value if previous is not None else _ZERO
         old_average = previous.average_price if previous is not None else None
         old_book_cost = (
             previous.book_cost
@@ -107,9 +99,7 @@ class PortfolioLedger:
             else Money.of(_ZERO, self._base_currency)
         )
         signed_quantity = (
-            fill.quantity.value
-            if fill.side is OrderSide.BUY
-            else -fill.quantity.value
+            fill.quantity.value if fill.side is OrderSide.BUY else -fill.quantity.value
         )
 
         arithmetic_values = (
@@ -126,9 +116,7 @@ class PortfolioLedger:
         )
         try:
             with localcontext() as context:
-                context.prec = _exact_arithmetic_precision(
-                    arithmetic_values
-                )
+                context.prec = _exact_arithmetic_precision(arithmetic_values)
                 new_quantity = old_quantity + signed_quantity
                 (
                     average_price,
@@ -141,9 +129,7 @@ class PortfolioLedger:
                     signed_fill_quantity=signed_quantity,
                     fill_price=fill.price.amount,
                     price_increment=instrument.tick_size,
-                    book_increment=(
-                        instrument.tick_size * instrument.lot_size
-                    ),
+                    book_increment=(instrument.tick_size * instrument.lot_size),
                 )
                 new_realized = Money.of(
                     old_realized.amount + realized_delta,
@@ -167,10 +153,7 @@ class PortfolioLedger:
                     book_cost=new_book_cost,
                     realized_pnl=new_realized,
                 )
-                cash_delta = (
-                    -(signed_quantity * fill.price.amount)
-                    - fill.fee.amount
-                )
+                cash_delta = -(signed_quantity * fill.price.amount) - fill.fee.amount
                 candidate_cash = Money.of(
                     self._cash.amount + cash_delta,
                     self._base_currency,
@@ -194,16 +177,9 @@ class PortfolioLedger:
                         "fill position delta did not reconcile."
                     )
                 if candidate_cash.amount - self._cash.amount != cash_delta:
-                    raise AccountingInvariantError(
-                        "fill cash delta did not reconcile."
-                    )
-                if (
-                    candidate_fees.amount - self._total_fees.amount
-                    != fill.fee.amount
-                ):
-                    raise AccountingInvariantError(
-                        "fill fee delta did not reconcile."
-                    )
+                    raise AccountingInvariantError("fill cash delta did not reconcile.")
+                if candidate_fees.amount - self._total_fees.amount != fill.fee.amount:
+                    raise AccountingInvariantError("fill fee delta did not reconcile.")
         except (DecimalException, ConfigurationError) as error:
             raise AccountingInvariantError(
                 "fill arithmetic produced an impossible value."
@@ -233,13 +209,9 @@ class PortfolioLedger:
     def apply_cash_event(self, event: CashEvent) -> PortfolioSnapshot:
         """Validate, reconcile, and atomically apply explicit external cash."""
         if not isinstance(event, CashEvent):
-            raise AccountingInvariantError(
-                "cash event must be a CashEvent."
-            )
+            raise AccountingInvariantError("cash event must be a CashEvent.")
         if event.id in self._processed_cash_event_ids:
-            raise AccountingInvariantError(
-                f"duplicate cash event id {event.id}."
-            )
+            raise AccountingInvariantError(f"duplicate cash event id {event.id}.")
         self._validate_timestamp(event.timestamp)
         if event.amount.currency != self._base_currency:
             raise AccountingInvariantError(
@@ -254,10 +226,7 @@ class PortfolioLedger:
                     self._cash.amount + event.amount.amount,
                     self._base_currency,
                 )
-                if (
-                    candidate_cash.amount - self._cash.amount
-                    != event.amount.amount
-                ):
+                if candidate_cash.amount - self._cash.amount != event.amount.amount:
                     raise AccountingInvariantError(
                         "cash event delta did not reconcile."
                     )
@@ -293,9 +262,7 @@ class PortfolioLedger:
         """Replace current valuation marks without changing book accounting."""
         self._validate_timestamp(timestamp)
         if not isinstance(prices, Mapping):
-            raise AccountingInvariantError(
-                "valuation prices must be a mapping."
-            )
+            raise AccountingInvariantError("valuation prices must be a mapping.")
         candidate_prices = dict(prices)
         for instrument_id, price in candidate_prices.items():
             if instrument_id not in self._instruments:
@@ -303,17 +270,13 @@ class PortfolioLedger:
                     f"unknown instrument {instrument_id} in valuation prices."
                 )
             if not isinstance(price, Money):
-                raise AccountingInvariantError(
-                    "valuation price must be Money."
-                )
+                raise AccountingInvariantError("valuation price must be Money.")
             if price.currency != self._base_currency:
                 raise AccountingInvariantError(
                     "valuation price currency must match the base currency."
                 )
             if price.amount <= _ZERO:
-                raise AccountingInvariantError(
-                    "valuation price must be positive."
-                )
+                raise AccountingInvariantError("valuation price must be positive.")
 
         candidate = self._build_snapshot(
             timestamp=timestamp,
@@ -336,9 +299,7 @@ class PortfolioLedger:
                 f"fill references unknown instrument {fill.instrument}."
             )
         if fill.id in self._processed_fill_ids:
-            raise AccountingInvariantError(
-                f"duplicate fill id {fill.id}."
-            )
+            raise AccountingInvariantError(f"duplicate fill id {fill.id}.")
         self._validate_timestamp(fill.timestamp)
         if (
             fill.price.currency != self._base_currency
@@ -349,17 +310,11 @@ class PortfolioLedger:
                 "fill currency must match the instrument and base currency."
             )
         if fill.quantity.value <= _ZERO:
-            raise AccountingInvariantError(
-                "fill quantity must be positive."
-            )
+            raise AccountingInvariantError("fill quantity must be positive.")
         if fill.price.amount <= _ZERO:
-            raise AccountingInvariantError(
-                "fill price must be positive."
-            )
+            raise AccountingInvariantError("fill price must be positive.")
         if fill.fee.amount < _ZERO:
-            raise AccountingInvariantError(
-                "fill fee cannot be negative."
-            )
+            raise AccountingInvariantError("fill fee cannot be negative.")
         if not _is_aligned(
             fill.quantity.value,
             instrument.lot_size,
@@ -384,13 +339,9 @@ class PortfolioLedger:
             or timestamp.tzinfo is None
             or timestamp.utcoffset() is None
         ):
-            raise AccountingInvariantError(
-                "ledger timestamp must be timezone-aware."
-            )
+            raise AccountingInvariantError("ledger timestamp must be timezone-aware.")
         if self._timestamp is not None and timestamp < self._timestamp:
-            raise AccountingInvariantError(
-                "ledger timestamp cannot move backwards."
-            )
+            raise AccountingInvariantError("ledger timestamp cannot move backwards.")
 
     def _prices_at_transition(
         self,
@@ -428,14 +379,9 @@ class PortfolioLedger:
                 *(event.amount.amount for event in cash_events),
             )
             with localcontext() as context:
-                context.prec = _exact_arithmetic_precision(
-                    arithmetic_values
-                )
+                context.prec = _exact_arithmetic_precision(arithmetic_values)
                 realized_amount = sum(
-                    (
-                        position.realized_pnl.amount
-                        for position in positions.values()
-                    ),
+                    (position.realized_pnl.amount for position in positions.values()),
                     _ZERO,
                 )
                 market_value_amount = _ZERO
@@ -445,11 +391,7 @@ class PortfolioLedger:
                     quantity = position.quantity.value
                     if quantity == _ZERO:
                         continue
-                    direction = (
-                        Decimal("1")
-                        if quantity > _ZERO
-                        else Decimal("-1")
-                    )
+                    direction = Decimal("1") if quantity > _ZERO else Decimal("-1")
                     mark = valuation_prices.get(instrument_id)
                     if mark is None:
                         marked_value = direction * position.book_cost.amount
@@ -458,8 +400,7 @@ class PortfolioLedger:
                     market_value_amount += marked_value
                     gross_exposure_amount += abs(marked_value)
                     unrealized_amount += (
-                        marked_value
-                        - direction * position.book_cost.amount
+                        marked_value - direction * position.book_cost.amount
                     )
                 equity_amount = cash.amount + market_value_amount
                 cash_event_amount = sum(
@@ -526,9 +467,7 @@ def _transition_book_cost(
     if old_quantity == _ZERO:
         return fill_price, fill_notional, _ZERO
     if old_average is None:
-        raise AccountingInvariantError(
-            "open position is missing average price."
-        )
+        raise AccountingInvariantError("open position is missing average price.")
     if _same_sign(old_quantity, signed_fill_quantity):
         new_book_cost = old_book_cost + fill_notional
         average_price = _round_to_increment(
@@ -547,9 +486,7 @@ def _transition_book_cost(
             book_increment,
         )
     )
-    realized_delta = direction * (
-        closed_quantity * fill_price - allocated_book
-    )
+    realized_delta = direction * (closed_quantity * fill_price - allocated_book)
     if new_quantity == _ZERO:
         return None, _ZERO, realized_delta
     if _same_sign(old_quantity, new_quantity):
@@ -582,13 +519,8 @@ def _reconcile_position_transition(
         old_quantity,
         signed_fill_quantity,
     ):
-        if (
-            new_book_cost - old_book_cost != fill_notional
-            or realized_delta != _ZERO
-        ):
-            raise AccountingInvariantError(
-                "opening fill book cost did not reconcile."
-            )
+        if new_book_cost - old_book_cost != fill_notional or realized_delta != _ZERO:
+            raise AccountingInvariantError("opening fill book cost did not reconcile.")
         return
 
     closed_quantity = min(abs(old_quantity), abs(signed_fill_quantity))
@@ -600,28 +532,17 @@ def _reconcile_position_transition(
         allocated_book = old_book_cost
     else:
         allocated_book = old_book_cost - new_book_cost
-    expected_realized = direction * (
-        closed_quantity * fill_price - allocated_book
-    )
+    expected_realized = direction * (closed_quantity * fill_price - allocated_book)
     if realized_delta != expected_realized:
-        raise AccountingInvariantError(
-            "closing fill realized P&L did not reconcile."
-        )
-    if (
-        new_quantity == _ZERO
-        and new_book_cost != _ZERO
-    ):
-        raise AccountingInvariantError(
-            "flat position retained book cost."
-        )
+        raise AccountingInvariantError("closing fill realized P&L did not reconcile.")
+    if new_quantity == _ZERO and new_book_cost != _ZERO:
+        raise AccountingInvariantError("flat position retained book cost.")
     if (
         new_quantity != _ZERO
         and not _same_sign(old_quantity, new_quantity)
         and new_book_cost != abs(new_quantity) * fill_price
     ):
-        raise AccountingInvariantError(
-            "crossed position book cost did not reconcile."
-        )
+        raise AccountingInvariantError("crossed position book cost did not reconcile.")
 
 
 def _round_to_increment(
@@ -635,9 +556,7 @@ def _round_to_increment(
 
 
 def _same_sign(left: Decimal, right: Decimal) -> bool:
-    return (left > _ZERO and right > _ZERO) or (
-        left < _ZERO and right < _ZERO
-    )
+    return (left > _ZERO and right > _ZERO) or (left < _ZERO and right < _ZERO)
 
 
 def _is_aligned(
@@ -668,9 +587,7 @@ def _exact_arithmetic_precision(values: tuple[Decimal, ...]) -> int:
             )
         exponents.append(exponent)
     lowest_place = min(exponents)
-    operand_digits = sum(
-        len(value.as_tuple().digits) for value in nonzero_values
-    )
+    operand_digits = sum(len(value.as_tuple().digits) for value in nonzero_values)
     carry_digits = len(str(len(nonzero_values))) + 4
     return max(
         64,

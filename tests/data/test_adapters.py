@@ -155,9 +155,7 @@ def test_pandas_source_rejects_non_exact_schema(mutate):
 
 def test_pandas_source_accepts_exact_columns_in_any_order():
     index = pd.date_range("2024-01-02", periods=1, tz="UTC", freq="D")
-    reordered = frame(index)[
-        ["volume", "close", "instrument", "low", "high", "open"]
-    ]
+    reordered = frame(index)[["volume", "close", "instrument", "low", "high", "open"]]
 
     result = PandasDataSource(
         reordered,
@@ -187,9 +185,7 @@ def test_pandas_source_rejects_naive_or_non_utc_index(
 
 
 def test_pandas_source_rejects_non_datetime_index():
-    invalid = frame(
-        pd.date_range("2024-01-02", periods=1, tz="UTC", freq="D")
-    )
+    invalid = frame(pd.date_range("2024-01-02", periods=1, tz="UTC", freq="D"))
     invalid.index = pd.Index([1])
 
     with pytest.raises(DataValidationError, match="DatetimeIndex"):

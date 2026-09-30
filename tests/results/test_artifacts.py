@@ -307,32 +307,20 @@ def test_write_persists_exact_files_and_noncyclic_checksums(
     artifact_path = Path(ref.path)
     assert {item.name for item in artifact_path.iterdir()} == _FILES
     actual = _file_view(artifact_path)
-    returned = {
-        item.name: (item.size_bytes, item.sha256)
-        for item in ref.files
-    }
+    returned = {item.name: (item.size_bytes, item.sha256) for item in ref.files}
     assert returned == actual
     assert ref.manifest_checksum == actual["manifest.json"][1]
     assert (artifact_path / "manifest.sha256").read_text("ascii") == (
         ref.manifest_checksum + "\n"
     )
     embedded = {
-        item.name: (item.size_bytes, item.sha256)
-        for item in ref.manifest.files
+        item.name: (item.size_bytes, item.sha256) for item in ref.manifest.files
     }
     assert set(embedded) == _PAYLOAD_FILES
-    assert embedded == {
-        name: actual[name]
-        for name in _PAYLOAD_FILES
-    }
-    manifest_document = json.loads(
-        (artifact_path / "manifest.json").read_text("utf-8")
-    )
+    assert embedded == {name: actual[name] for name in _PAYLOAD_FILES}
+    manifest_document = json.loads((artifact_path / "manifest.json").read_text("utf-8"))
     assert manifest_document["artifact_id"] == ref.manifest.artifact_id
-    assert {
-        item["name"]
-        for item in manifest_document["files"]
-    } == _PAYLOAD_FILES
+    assert {item["name"] for item in manifest_document["files"]} == _PAYLOAD_FILES
     assert "manifest.json" not in manifest_document["files"]
     assert "manifest.sha256" not in manifest_document["files"]
     assert before == result.replay_fingerprint()
@@ -415,9 +403,7 @@ def test_parquet_schemas_and_content_are_explicit_and_round_trip(
         assert table.column_names == columns
 
     equity = pq.read_table(artifact_path / "equity.parquet").to_pylist()
-    positions = pq.read_table(
-        artifact_path / "positions.parquet"
-    ).to_pylist()
+    positions = pq.read_table(artifact_path / "positions.parquet").to_pylist()
     events = pq.read_table(artifact_path / "events.parquet").to_pylist()
     assert [row["equity"] for row in equity] == ["1000", "1000"]
     assert positions == [
@@ -448,9 +434,7 @@ def test_snapshot_cash_events_and_all_valuation_prices_round_trip(
     result = _result_with_complete_snapshot_state()
     ref = LocalArtifactStore(tmp_path / "artifacts").write(result)
 
-    equity = pq.read_table(
-        Path(ref.path) / "equity.parquet"
-    ).to_pylist()
+    equity = pq.read_table(Path(ref.path) / "equity.parquet").to_pylist()
     expected_cash_events = [
         {
             "cash_event_id": "cash_event_" + "4" * 32,
@@ -478,9 +462,7 @@ def test_snapshot_cash_events_and_all_valuation_prices_round_trip(
 
 
 def test_empty_results_keep_all_stable_parquet_schemas(tmp_path: Path) -> None:
-    ref = LocalArtifactStore(tmp_path / "artifacts").write(
-        _result("4", empty=True)
-    )
+    ref = LocalArtifactStore(tmp_path / "artifacts").write(_result("4", empty=True))
 
     for name in (
         "equity.parquet",
@@ -631,14 +613,10 @@ def test_injected_failures_leave_no_target_temp_or_lock(
         monkeypatch.setattr(
             local,
             "_rename_noreplace",
-            lambda *args, **kwargs: (_ for _ in ()).throw(
-                OSError("rename failed")
-            ),
+            lambda *args, **kwargs: (_ for _ in ()).throw(OSError("rename failed")),
         )
 
-    expected_error = (
-        RuntimeError if failure == "serialize" else AdapterContractError
-    )
+    expected_error = RuntimeError if failure == "serialize" else AdapterContractError
     with pytest.raises(expected_error) as captured:
         LocalArtifactStore(root).write(result)
 
@@ -704,9 +682,7 @@ def test_store_is_reentrant_and_artifact_id_depends_on_behavior(
 
     assert Path(first.path).name != Path(second.path).name
     assert first.manifest.artifact_id == second.manifest.artifact_id
-    assert first.manifest.replay_fingerprint == (
-        second.manifest.replay_fingerprint
-    )
+    assert first.manifest.replay_fingerprint == (second.manifest.replay_fingerprint)
 
 
 def test_fsync_temp_rename_and_root_fsync_order_is_observable(
@@ -1026,9 +1002,7 @@ def test_write_oserror_is_wrapped_as_typed_adapter_failure(
     monkeypatch.setattr(
         local,
         "_write_file",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            OSError("write failed")
-        ),
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("write failed")),
     )
 
     with pytest.raises(AdapterContractError) as captured:

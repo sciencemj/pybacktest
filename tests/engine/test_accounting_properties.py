@@ -55,9 +55,7 @@ def independent_book_oracle(
     quantum = Decimal("0.01")
     for item in generated:
         signed_fill = (
-            item.quantity.value
-            if item.side is OrderSide.BUY
-            else -item.quantity.value
+            item.quantity.value if item.side is OrderSide.BUY else -item.quantity.value
         )
         new_quantity = quantity + signed_fill
         fill_notional = item.quantity.value * item.price.amount
@@ -75,9 +73,7 @@ def independent_book_oracle(
                     rounding=ROUND_HALF_EVEN,
                 )
             direction = Decimal("1") if quantity > 0 else Decimal("-1")
-            realized += direction * (
-                closed * item.price.amount - allocated_book
-            )
+            realized += direction * (closed * item.price.amount - allocated_book)
             if new_quantity == 0:
                 book_cost = Decimal("0")
             elif (quantity > 0) == (new_quantity > 0):
@@ -101,8 +97,8 @@ def test_fill_sequences_reconcile_signed_position_fees_cash_and_time(
         prices={AAPL.id: Money.usd("100")},
     )
 
-    expected_position, expected_book, expected_realized = (
-        independent_book_oracle(generated)
+    expected_position, expected_book, expected_realized = independent_book_oracle(
+        generated
     )
     expected_fees = sum((item.fee.amount for item in generated), Decimal("0"))
     expected_cash_delta = sum(
@@ -118,11 +114,11 @@ def test_fill_sequences_reconcile_signed_position_fees_cash_and_time(
     direction = (
         Decimal("1")
         if expected_position > 0
-        else Decimal("-1") if expected_position < 0 else Decimal("0")
+        else Decimal("-1")
+        if expected_position < 0
+        else Decimal("0")
     )
-    expected_unrealized = (
-        expected_market_value - direction * expected_book
-    )
+    expected_unrealized = expected_market_value - direction * expected_book
 
     assert snapshot.positions[AAPL.id].quantity.value == expected_position
     assert snapshot.positions[AAPL.id].book_cost.amount == expected_book
@@ -159,11 +155,7 @@ def test_repeated_entries_then_full_close_have_exact_realized_and_zero_unrealize
     entries: list[tuple[int, int]],
     closing_price_cents: int,
 ) -> None:
-    closing_side = (
-        OrderSide.SELL
-        if opening_side is OrderSide.BUY
-        else OrderSide.BUY
-    )
+    closing_side = OrderSide.SELL if opening_side is OrderSide.BUY else OrderSide.BUY
     generated = [
         fill(
             AAPL.id,
@@ -195,12 +187,8 @@ def test_repeated_entries_then_full_close_have_exact_realized_and_zero_unrealize
         (item.quantity.value * item.price.amount for item in generated),
         Decimal("0"),
     )
-    direction = (
-        Decimal("1") if opening_side is OrderSide.BUY else Decimal("-1")
-    )
-    expected_realized = direction * (
-        total_quantity * closing_price - entry_book
-    )
+    direction = Decimal("1") if opening_side is OrderSide.BUY else Decimal("-1")
+    expected_realized = direction * (total_quantity * closing_price - entry_book)
     position = snapshot.positions[AAPL.id]
     assert position.quantity.value == Decimal("0")
     assert position.book_cost == Money.usd("0")
@@ -225,11 +213,7 @@ def test_zero_crossing_sequences_realize_only_closed_leg_and_rebase_open_leg(
     opening_price_cents: int,
     crossing_price_cents: int,
 ) -> None:
-    closing_side = (
-        OrderSide.SELL
-        if opening_side is OrderSide.BUY
-        else OrderSide.BUY
-    )
+    closing_side = OrderSide.SELL if opening_side is OrderSide.BUY else OrderSide.BUY
     opening_price = Decimal(opening_price_cents) / Decimal("100")
     crossing_price = Decimal(crossing_price_cents) / Decimal("100")
     ledger = account()

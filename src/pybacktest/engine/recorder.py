@@ -64,9 +64,7 @@ class RunRecorder:
         if not isinstance(manifest, RunManifest):
             raise ResultValidationError("manifest must be a RunManifest.")
         if not isinstance(metrics_config, MetricsConfig):
-            raise ResultValidationError(
-                "metrics_config must be a MetricsConfig."
-            )
+            raise ResultValidationError("metrics_config must be a MetricsConfig.")
         self._manifest = manifest
         self._metrics_config = metrics_config
         self._market_timestamps: list[datetime] = []
@@ -93,16 +91,9 @@ class RunRecorder:
             or timestamp.tzinfo is None
             or timestamp.utcoffset() is None
         ):
-            raise ResultValidationError(
-                "market timestamp must be timezone-aware."
-            )
-        if (
-            self._market_timestamps
-            and timestamp <= self._market_timestamps[-1]
-        ):
-            raise ResultValidationError(
-                "market timestamp cannot repeat or regress."
-            )
+            raise ResultValidationError("market timestamp must be timezone-aware.")
+        if self._market_timestamps and timestamp <= self._market_timestamps[-1]:
+            raise ResultValidationError("market timestamp cannot repeat or regress.")
         if self._market_timestamps and (
             self._market_timestamps[-1] not in self._snapshot_timestamps
         ):
@@ -115,22 +106,16 @@ class RunRecorder:
         """Record exactly one complete snapshot for the current market."""
         self._require_open()
         if not isinstance(snapshot, PortfolioSnapshot):
-            raise ResultValidationError(
-                "snapshot must be a PortfolioSnapshot."
-            )
+            raise ResultValidationError("snapshot must be a PortfolioSnapshot.")
         if not self._market_timestamps:
-            raise ResultValidationError(
-                "a market timestamp must precede its snapshot."
-            )
+            raise ResultValidationError("a market timestamp must precede its snapshot.")
         current = self._market_timestamps[-1]
         if snapshot.timestamp != current:
             raise ResultValidationError(
                 "snapshot timestamp must match the current market."
             )
         if current in self._snapshot_timestamps:
-            raise ResultValidationError(
-                "current market already has a snapshot."
-            )
+            raise ResultValidationError("current market already has a snapshot.")
         self._snapshots.append(snapshot)
         self._snapshot_timestamps.add(current)
 
@@ -140,9 +125,7 @@ class RunRecorder:
         if not isinstance(order, Order):
             raise ResultValidationError("order must be an Order.")
         if not self._market_timestamps:
-            raise ResultValidationError(
-                "a market timestamp must precede an order."
-            )
+            raise ResultValidationError("a market timestamp must precede an order.")
         if order.submitted_at > self._market_timestamps[-1]:
             raise ResultValidationError(
                 "order submission cannot follow the current market."
@@ -170,8 +153,7 @@ class RunRecorder:
                 )
             if (
                 order.status not in _ALLOWED_ORDER_TRANSITIONS[previous.status]
-                or order.filled_quantity.value
-                < previous.filled_quantity.value
+                or order.filled_quantity.value < previous.filled_quantity.value
             ):
                 raise ResultValidationError(
                     "order replacement regressed its lifecycle."
@@ -186,14 +168,10 @@ class RunRecorder:
         if fill.id in self._fill_ids:
             raise ResultValidationError("fill ID is already recorded.")
         if not self._market_timestamps:
-            raise ResultValidationError(
-                "a market timestamp must precede a fill."
-            )
+            raise ResultValidationError("a market timestamp must precede a fill.")
         current = self._market_timestamps[-1]
         if fill.timestamp != current:
-            raise ResultValidationError(
-                "fill timestamp must match the current market."
-            )
+            raise ResultValidationError("fill timestamp must match the current market.")
         if current in self._snapshot_timestamps:
             raise ResultValidationError(
                 "fills cannot follow the current market snapshot."
@@ -305,18 +283,13 @@ class RunRecorder:
             )
         if summary is None:
             summary = calculate_metrics(
-                equity=tuple(
-                    snapshot.equity.amount
-                    for snapshot in self._snapshots
-                ),
+                equity=tuple(snapshot.equity.amount for snapshot in self._snapshots),
                 fills=tuple(self._fills),
                 snapshots=tuple(self._snapshots),
                 config=self._metrics_config,
             )
         elif not isinstance(summary, SummaryMetrics):
-            raise ResultValidationError(
-                "summary must be SummaryMetrics when provided."
-            )
+            raise ResultValidationError("summary must be SummaryMetrics when provided.")
         combined_warnings = list(summary.warnings)
         seen = set(combined_warnings)
         for warning in self._warnings:

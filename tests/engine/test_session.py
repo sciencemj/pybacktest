@@ -108,9 +108,7 @@ def test_simulation_request_rejects_duplicate_universe_and_invalid_seed() -> Non
 
 def _broker_factory():
     return SimulatedBrokerFactory(
-        fill_model=NextBarOpenFill(
-            intrabar_policy=IntrabarPolicy.CONSERVATIVE
-        ),
+        fill_model=NextBarOpenFill(intrabar_policy=IntrabarPolicy.CONSERVATIVE),
         commission=NoCommission(),
         slippage=NoSlippage(),
         liquidity=NoLiquidityLimit(),
@@ -337,9 +335,7 @@ def test_prior_gtc_remainder_reserves_capacity_for_a_later_step() -> None:
 
     assert result.orders[1].quantity == Quantity.of("60")
     adjusted = [
-        event
-        for event in result.events
-        if event.code.value == "order.adjusted"
+        event for event in result.events if event.code.value == "order.adjusted"
     ]
     assert len(adjusted) == 1
     assert adjusted[0].details["codes"] == (
@@ -353,8 +349,7 @@ def test_observation_rejects_a_portfolio_from_another_timestamp() -> None:
     observation = session.reset()
     mismatched = replace(
         observation.portfolio,
-        timestamp=observation.portfolio.timestamp
-        + timedelta(seconds=1),
+        timestamp=observation.portfolio.timestamp + timedelta(seconds=1),
     )
 
     with pytest.raises(ConfigurationError, match="portfolio"):
@@ -490,9 +485,8 @@ def test_same_step_orders_share_deterministic_cash_reservations() -> None:
     )
 
     assert step.observation is not None
-    assert (
-        step.observation.portfolio.positions[instrument_id].quantity
-        == Quantity.of("100")
+    assert step.observation.portfolio.positions[instrument_id].quantity == Quantity.of(
+        "100"
     )
     second = session.advance((), observation=step.observation)
     assert second.observation is not None
@@ -570,9 +564,7 @@ def test_adjusted_trade_explanation_keeps_the_risk_decision_codes() -> None:
 
     explanation = result.explain_trade(result.orders[0].id)
     risk_entries = [
-        entry
-        for entry in explanation.entries
-        if entry.stage.value == "risk"
+        entry for entry in explanation.entries if entry.stage.value == "risk"
     ]
     assert len(risk_entries) == 1
     assert risk_entries[0].code.value == "order.adjusted"
@@ -580,12 +572,8 @@ def test_adjusted_trade_explanation_keeps_the_risk_decision_codes() -> None:
         "max_leverage",
         "available_cash",
     )
-    assert Decimal(risk_entries[0].details["requested_quantity"]) == (
-        Decimal("200")
-    )
-    assert Decimal(risk_entries[0].details["adjusted_quantity"]) == (
-        Decimal("100")
-    )
+    assert Decimal(risk_entries[0].details["requested_quantity"]) == (Decimal("200"))
+    assert Decimal(risk_entries[0].details["adjusted_quantity"]) == (Decimal("100"))
     assert [entry.stage.value for entry in explanation.entries] == [
         "intent",
         "sizing",
@@ -615,9 +603,7 @@ class _TamperingBroker:
         return self._inner.cancel(order_id, timestamp)
 
     def process(self, market: MarketSlice, rng):
-        return self._factory.tamper(
-            tuple(self._inner.process(market, rng))
-        )
+        return self._factory.tamper(tuple(self._inner.process(market, rng)))
 
 
 class _TamperingBrokerFactory:
@@ -696,18 +682,14 @@ class _FutureFillTimestampBrokerFactory(_TamperingBrokerFactory):
             return events
         first = events[0]
         shifted = first.fill.timestamp + timedelta(seconds=1)
-        return (
-            replace(first, fill=replace(first.fill, timestamp=shifted)),
-        )
+        return (replace(first, fill=replace(first.fill, timestamp=shifted)),)
 
 
 class _SilentlyResurrectingBroker(_TamperingBroker):
     def process(self, market: MarketSlice, rng):
         events = tuple(self._inner.process(market, rng))
         self._resurrected = {
-            order.id: order
-            for event in events
-            for order in (event.order,)
+            order.id: order for event in events for order in (event.order,)
         }
         return events
 
@@ -741,11 +723,7 @@ class _FlippedFillSideBrokerFactory(_TamperingBrokerFactory):
         if not events:
             return events
         first = events[0]
-        flipped = (
-            OrderSide.SELL
-            if first.fill.side is OrderSide.BUY
-            else OrderSide.BUY
-        )
+        flipped = OrderSide.SELL if first.fill.side is OrderSide.BUY else OrderSide.BUY
         return (replace(first, fill=replace(first.fill, side=flipped)),)
 
 
@@ -822,9 +800,7 @@ def _engine_owned_state(session):
         "ledger_cash": ledger_snapshot.cash,
         "ledger_positions": {
             instrument_id: position.quantity
-            for instrument_id, position in (
-                ledger_snapshot.positions.items()
-            )
+            for instrument_id, position in (ledger_snapshot.positions.items())
         },
     }
 
@@ -1109,9 +1085,7 @@ class _ShapeShiftingBatch(Sequence):
     def __getitem__(self, index):
         if index == 0:
             self.traversals += 1
-        current = (
-            self._swapped if self.reads >= self._swap_after else self._events
-        )
+        current = self._swapped if self.reads >= self._swap_after else self._events
         self.reads += 1
         return current[index]
 
@@ -1408,9 +1382,7 @@ def test_falsy_valid_run_overrides_are_not_replaced_by_defaults(
 
     assert result.fills == ()
     rejections = [
-        event
-        for event in result.events
-        if event.code.value == "order.rejected"
+        event for event in result.events if event.code.value == "order.rejected"
     ]
     assert [event.stage.value for event in rejections] == [stage]
 
@@ -1452,9 +1424,7 @@ class _InvalidActiveOrdersBrokerFactory:
 
 
 def test_broker_active_orders_is_validated_before_observation() -> None:
-    session = _session(
-        broker_factory=_InvalidActiveOrdersBrokerFactory()
-    )
+    session = _session(broker_factory=_InvalidActiveOrdersBrokerFactory())
 
     with pytest.raises(AdapterContractError) as raised:
         session.reset()
@@ -1591,9 +1561,7 @@ def test_daily_day_order_waits_for_its_instruments_first_eligible_bar() -> None:
     session.advance((), observation=second_step.observation)
     result = session.result()
     assert result.orders[0].status is OrderStatus.ACCEPTED
-    assert "order.expired" not in {
-        event.code.value for event in result.events
-    }
+    assert "order.expired" not in {event.code.value for event in result.events}
 
 
 def test_intraday_day_order_partially_fills_at_anchor_then_expires() -> None:
@@ -1640,9 +1608,7 @@ def test_intraday_day_order_partially_fills_at_anchor_then_expires() -> None:
         calendar=CalendarPolicy.union(max_staleness_bars=2),
     )
     broker_factory = SimulatedBrokerFactory(
-        fill_model=NextBarOpenFill(
-            intrabar_policy=IntrabarPolicy.CONSERVATIVE
-        ),
+        fill_model=NextBarOpenFill(intrabar_policy=IntrabarPolicy.CONSERVATIVE),
         commission=NoCommission(),
         slippage=NoSlippage(),
         liquidity=VolumeParticipationLimit(Decimal("0.5")),
@@ -1668,10 +1634,7 @@ def test_intraday_day_order_partially_fills_at_anchor_then_expires() -> None:
 
     assert anchor_step.observation is not None
     assert len(anchor_step.observation.active_orders) == 1
-    assert (
-        anchor_step.observation.active_orders[0].filled_quantity
-        == Quantity.of("1")
-    )
+    assert anchor_step.observation.active_orders[0].filled_quantity == Quantity.of("1")
     expired_step = session.advance(
         (),
         observation=anchor_step.observation,
@@ -1775,17 +1738,15 @@ def test_broker_receives_only_a_narrowed_fill_id_capability() -> None:
 
 def _reachable_state(value) -> list[object]:
     """Every object the facade retains, via __dict__ and every MRO slot."""
-    retained: list[object] = list(vars(value).values()) if hasattr(
-        value, "__dict__"
-    ) else []
+    retained: list[object] = (
+        list(vars(value).values()) if hasattr(value, "__dict__") else []
+    )
     for klass in type(value).__mro__:
         declared = klass.__dict__.get("__slots__", ())
         if isinstance(declared, str):
             declared = (declared,)
         for slot in declared:
-            if slot not in {"__dict__", "__weakref__"} and hasattr(
-                value, slot
-            ):
+            if slot not in {"__dict__", "__weakref__"} and hasattr(value, slot):
                 retained.append(getattr(value, slot))
     return retained
 
@@ -1953,11 +1914,8 @@ def test_union_market_is_current_only_while_marks_obey_staleness() -> None:
         first_id,
         second_id,
     }
-    assert (
-        step.observation.portfolio.valuation_prices[
-            second_id
-        ].amount
-        == Decimal("200.0")
+    assert step.observation.portfolio.valuation_prices[second_id].amount == Decimal(
+        "200.0"
     )
 
 

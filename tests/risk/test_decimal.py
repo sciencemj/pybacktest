@@ -139,11 +139,14 @@ def test_lot_floor_accepts_exact_work_bound_and_rejects_next_digit():
 def test_lot_floor_bounds_exact_aligned_result_significant_digits():
     at_bound = Decimal("9" * 4096)
 
-    assert floor_quantity_to_lot(
-        at_bound,
-        Decimal("1"),
-        Decimal("1"),
-    ) == at_bound
+    assert (
+        floor_quantity_to_lot(
+            at_bound,
+            Decimal("1"),
+            Decimal("1"),
+        )
+        == at_bound
+    )
     with pytest.raises(InvalidOperation):
         floor_quantity_to_lot(
             Decimal("9" * 4097),
@@ -176,12 +179,9 @@ def test_lot_floor_matches_independent_fraction_oracle_for_varied_inputs():
     for _ in range(100):
         sign = "-" if generator.randrange(2) else ""
         notional = Decimal(
-            f"{sign}{generator.randint(1, 999999)}"
-            f"E{generator.randint(-8, 8)}"
+            f"{sign}{generator.randint(1, 999999)}E{generator.randint(-8, 8)}"
         )
-        price = Decimal(
-            f"{generator.randint(1, 999)}E{generator.randint(-4, 4)}"
-        )
+        price = Decimal(f"{generator.randint(1, 999)}E{generator.randint(-4, 4)}")
         lot_size = generator.choice(lots)
 
         result = floor_quantity_to_lot(

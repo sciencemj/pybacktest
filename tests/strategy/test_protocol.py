@@ -192,9 +192,7 @@ def test_strategy_context_rejects_feature_view_timestamp_mismatch():
         StrategyContext(
             timestamp=dataset.timestamps[1],
             portfolio=StaticPortfolio(
-                positions=MappingProxyType(
-                    {instrument: Quantity.of("1")}
-                )
+                positions=MappingProxyType({instrument: Quantity.of("1")})
             ),
             active_orders=(),
             features=features.view(dataset.timestamps[0]),
@@ -270,9 +268,7 @@ def test_strategy_context_rejects_datetime_arrays(
         StrategyContext(
             timestamp=not_a_scalar,  # type: ignore[arg-type]
             portfolio=StaticPortfolio(
-                positions=MappingProxyType(
-                    {instrument: Quantity.of("1")}
-                )
+                positions=MappingProxyType({instrument: Quantity.of("1")})
             ),
             active_orders=(),
             features=features.view(dataset.timestamps[1]),
