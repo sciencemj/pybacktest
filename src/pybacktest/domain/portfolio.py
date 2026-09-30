@@ -33,9 +33,7 @@ class CashEvent:
 
     def __post_init__(self) -> None:
         if not isinstance(self.id, CashEventId):
-            raise AccountingInvariantError(
-                "CashEvent id must be a CashEventId."
-            )
+            raise AccountingInvariantError("CashEvent id must be a CashEventId.")
         if (
             not isinstance(self.timestamp, datetime)
             or self.timestamp.tzinfo is None
@@ -47,9 +45,7 @@ class CashEvent:
         if not isinstance(self.amount, Money):
             raise AccountingInvariantError("CashEvent amount must be Money.")
         if not isinstance(self.code, CashEventCode):
-            raise AccountingInvariantError(
-                "CashEvent code must be a CashEventCode."
-            )
+            raise AccountingInvariantError("CashEvent code must be a CashEventCode.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,21 +64,13 @@ class Position:
                 "Position instrument must be an InstrumentId."
             )
         if not isinstance(self.quantity, Quantity):
-            raise AccountingInvariantError(
-                "Position quantity must be a Quantity."
-            )
+            raise AccountingInvariantError("Position quantity must be a Quantity.")
         if not isinstance(self.realized_pnl, Money):
-            raise AccountingInvariantError(
-                "Position realized_pnl must be Money."
-            )
+            raise AccountingInvariantError("Position realized_pnl must be Money.")
         if not isinstance(self.book_cost, Money):
-            raise AccountingInvariantError(
-                "Position book_cost must be Money."
-            )
+            raise AccountingInvariantError("Position book_cost must be Money.")
         if self.book_cost.currency != self.realized_pnl.currency:
-            raise AccountingInvariantError(
-                "Position currencies must match."
-            )
+            raise AccountingInvariantError("Position currencies must match.")
         if self.quantity.value == Decimal("0"):
             if self.average_price is not None:
                 raise AccountingInvariantError(
@@ -98,13 +86,9 @@ class Position:
                 "An open position requires an average price."
             )
         if self.average_price.amount <= Decimal("0"):
-            raise AccountingInvariantError(
-                "Position average price must be positive."
-            )
+            raise AccountingInvariantError("Position average price must be positive.")
         if self.average_price.currency != self.realized_pnl.currency:
-            raise AccountingInvariantError(
-                "Position currencies must match."
-            )
+            raise AccountingInvariantError("Position currencies must match.")
         if self.book_cost.amount <= Decimal("0"):
             raise AccountingInvariantError(
                 "An open position requires positive book cost."
@@ -151,9 +135,7 @@ class PortfolioSnapshot:
             )
         currencies = {value.currency for value in monetary_values}
         if len(currencies) != 1:
-            raise AccountingInvariantError(
-                "PortfolioSnapshot must use one currency."
-            )
+            raise AccountingInvariantError("PortfolioSnapshot must use one currency.")
         try:
             positions = dict(self.positions)
             prices = dict(self.valuation_prices)
@@ -191,9 +173,8 @@ class PortfolioSnapshot:
                 raise AccountingInvariantError(
                     "PortfolioSnapshot valuation prices are inconsistent."
                 )
-        if (
-            isinstance(self.cash_events, (str, bytes, bytearray))
-            or not isinstance(self.cash_events, Sequence)
+        if isinstance(self.cash_events, (str, bytes, bytearray)) or not isinstance(
+            self.cash_events, Sequence
         ):
             raise AccountingInvariantError(
                 "PortfolioSnapshot cash_events must be a sequence."
@@ -256,14 +237,9 @@ class PortfolioSnapshot:
         )
         try:
             with localcontext() as context:
-                context.prec = _portfolio_arithmetic_precision(
-                    arithmetic_values
-                )
+                context.prec = _portfolio_arithmetic_precision(arithmetic_values)
                 expected_realized = sum(
-                    (
-                        position.realized_pnl.amount
-                        for position in positions.values()
-                    ),
+                    (position.realized_pnl.amount for position in positions.values()),
                     Decimal("0"),
                 )
                 expected_market = Decimal("0")
@@ -274,9 +250,7 @@ class PortfolioSnapshot:
                     if quantity == Decimal("0"):
                         continue
                     direction = (
-                        Decimal("1")
-                        if quantity > Decimal("0")
-                        else Decimal("-1")
+                        Decimal("1") if quantity > Decimal("0") else Decimal("-1")
                     )
                     mark = prices.get(instrument_id)
                     marked_value = (
@@ -287,8 +261,7 @@ class PortfolioSnapshot:
                     expected_market += marked_value
                     expected_gross += abs(marked_value)
                     expected_unrealized += (
-                        marked_value
-                        - direction * position.book_cost.amount
+                        marked_value - direction * position.book_cost.amount
                     )
                 expected_equity = self.cash.amount + expected_market
         except DecimalException as error:
@@ -328,9 +301,7 @@ class PortfolioSnapshot:
 def _portfolio_arithmetic_precision(
     values: tuple[Decimal, ...],
 ) -> int:
-    nonzero_values = tuple(
-        value for value in values if value != Decimal("0")
-    )
+    nonzero_values = tuple(value for value in values if value != Decimal("0"))
     if not nonzero_values:
         return 64
     highest_place = max(value.adjusted() for value in nonzero_values)
@@ -343,9 +314,7 @@ def _portfolio_arithmetic_precision(
             )
         exponents.append(exponent)
     lowest_place = min(exponents)
-    operand_digits = sum(
-        len(value.as_tuple().digits) for value in nonzero_values
-    )
+    operand_digits = sum(len(value.as_tuple().digits) for value in nonzero_values)
     carry_digits = len(str(len(nonzero_values))) + 4
     return max(
         64,

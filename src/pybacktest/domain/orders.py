@@ -393,9 +393,7 @@ class Order:
         if self.status is OrderStatus.REJECTED and filled != 0:
             raise ConfigurationError("Rejected orders cannot have filled_quantity.")
         if self.status is OrderStatus.CANCELLED and filled == quantity:
-            raise ConfigurationError(
-                "Cancelled orders cannot be fully filled."
-            )
+            raise ConfigurationError("Cancelled orders cannot be fully filled.")
 
     def _raise_invalid_transition(self, action: str) -> NoReturn:
         if self.status in {

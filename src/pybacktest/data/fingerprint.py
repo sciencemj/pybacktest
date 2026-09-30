@@ -34,15 +34,9 @@ def compute_dataset_fingerprint(
         "instruments": [
             {
                 "id": str(instrument_id),
-                "lot_size": _canonical_decimal(
-                    instruments[instrument_id].lot_size
-                ),
-                "quote_currency": instruments[
-                    instrument_id
-                ].quote_currency,
-                "tick_size": _canonical_decimal(
-                    instruments[instrument_id].tick_size
-                ),
+                "lot_size": _canonical_decimal(instruments[instrument_id].lot_size),
+                "quote_currency": instruments[instrument_id].quote_currency,
+                "tick_size": _canonical_decimal(instruments[instrument_id].tick_size),
                 "timezone": str(instruments[instrument_id].timezone),
             }
             for instrument_id in ordered_ids

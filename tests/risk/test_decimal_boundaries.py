@@ -323,6 +323,8 @@ except BaseException as error:
 
 print(json.dumps(payload))
 """
+
+
 def _run_boundary_case(case: str) -> dict[str, object]:
     completed = subprocess.run(
         [sys.executable, "-c", _BOUNDARY_SCRIPT, case],
@@ -333,8 +335,7 @@ def _run_boundary_case(case: str) -> dict[str, object]:
         check=False,
     )
     assert completed.returncode == 0, (
-        f"boundary subprocess exited {completed.returncode}: "
-        f"{completed.stderr}"
+        f"boundary subprocess exited {completed.returncode}: {completed.stderr}"
     )
     payload = json.loads(completed.stdout)
     assert isinstance(payload, dict)
@@ -367,9 +368,7 @@ def test_min_emin_lot_cancellation_passes_the_exact_small_order():
 
     assert payload["kind"] == "risk"
     assert payload["status"] == "passed"
-    assert Decimal(str(payload["final_quantity"])) == Decimal(
-        f"1E{MIN_EMIN}"
-    )
+    assert Decimal(str(payload["final_quantity"])) == Decimal(f"1E{MIN_EMIN}")
     assert payload["codes"] == []
 
 
@@ -387,9 +386,7 @@ def test_mixed_max_min_aligned_weight_sizing_uses_compact_raw_quantity():
 
     assert payload["kind"] == "order"
     assert payload["side"] == "buy"
-    assert Decimal(str(payload["quantity"])) == Decimal(
-        f"1E+{MAX_EMAX - 2}"
-    )
+    assert Decimal(str(payload["quantity"])) == Decimal(f"1E+{MAX_EMAX - 2}")
 
 
 def test_mixed_max_min_aligned_loose_risk_caps_pass_both_directions():
@@ -400,9 +397,7 @@ def test_mixed_max_min_aligned_loose_risk_caps_pass_both_directions():
         decision = payload[side]
         assert isinstance(decision, dict)
         assert decision["status"] == "passed"
-        assert Decimal(str(decision["final_quantity"])) == Decimal(
-            f"1E+{MAX_EMAX - 2}"
-        )
+        assert Decimal(str(decision["final_quantity"])) == Decimal(f"1E+{MAX_EMAX - 2}")
         assert decision["codes"] == []
 
 

@@ -383,10 +383,7 @@ def test_metric_warnings_are_stable_deduplicated_and_values_never_nonfinite() ->
 
     assert first == second
     assert len(first.warnings) == len(set(first.warnings))
-    assert all(
-        item.value is None or item.value.is_finite()
-        for item in first.results
-    )
+    assert all(item.value is None or item.value.is_finite() for item in first.results)
 
 
 @pytest.mark.parametrize(
@@ -434,6 +431,5 @@ def test_overflow_sized_finite_equity_does_not_produce_infinity() -> None:
 
     assert metrics.total_return == Decimal("2")
     assert all(
-        result.value is None or result.value.is_finite()
-        for result in metrics.results
+        result.value is None or result.value.is_finite() for result in metrics.results
     )

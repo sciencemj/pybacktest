@@ -1,0 +1,4 @@
+# Formatting-only commits; configure with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# ruff format of src, tests, and benchmarks
+2ced0bb3aab690de8869290c789cfae064958110

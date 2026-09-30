@@ -44,17 +44,11 @@ class BarView:
         if any(value <= 0 for value in (open_, high, low, close)):
             raise DataValidationError("BarView prices must be positive.")
         if volume < 0:
-            raise DataValidationError(
-                "BarView volume must be nonnegative."
-            )
+            raise DataValidationError("BarView volume must be nonnegative.")
         if high < max(open_, close):
-            raise DataValidationError(
-                "BarView high must include open and close."
-            )
+            raise DataValidationError("BarView high must include open and close.")
         if low > min(open_, close):
-            raise DataValidationError(
-                "BarView low must include open and close."
-            )
+            raise DataValidationError("BarView low must include open and close.")
         object.__setattr__(self, "timestamp", timestamp)
         object.__setattr__(self, "open", open_)
         object.__setattr__(self, "high", high)
@@ -81,18 +75,14 @@ class MarketSlice:
         if np.isnat(timestamp):
             raise DataValidationError("MarketSlice timestamp cannot be NaT.")
         if not bars:
-            raise DataValidationError(
-                "MarketSlice requires at least one current bar."
-            )
+            raise DataValidationError("MarketSlice requires at least one current bar.")
         for instrument_id, bar in bars.items():
             if not isinstance(instrument_id, InstrumentId):
                 raise DataValidationError(
                     "MarketSlice keys must be InstrumentId values."
                 )
             if not isinstance(bar, BarView):
-                raise DataValidationError(
-                    "MarketSlice values must be BarView objects."
-                )
+                raise DataValidationError("MarketSlice values must be BarView objects.")
             if bar.timestamp != timestamp:
                 raise DataValidationError(
                     "MarketSlice bars must match the current timestamp."

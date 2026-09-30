@@ -48,10 +48,7 @@ def test_task9_submodule_exports_are_curated_for_later_tasks() -> None:
     assert ports_api.ArtifactStore.__name__ == "ArtifactStore"
     assert results_api.BacktestResult is BacktestResult
     assert results_api.RunManifest is RunManifest
-    assert (
-        results_api.calculate_replay_fingerprint
-        is calculate_replay_fingerprint
-    )
+    assert results_api.calculate_replay_fingerprint is calculate_replay_fingerprint
 
 
 def _run_id(digit: str = "1") -> RunId:
@@ -554,9 +551,7 @@ def test_canonical_serializer_normalizes_aware_time_and_decimal_exactly() -> Non
     )
 
     assert canonical_json_bytes({"at": utc}) == canonical_json_bytes({"at": seoul})
-    assert b'"$decimal":"1.2300"' in canonical_json_bytes(
-        {"amount": Decimal("1.2300")}
-    )
+    assert b'"$decimal":"1.2300"' in canonical_json_bytes({"amount": Decimal("1.2300")})
 
 
 @pytest.mark.parametrize("unknown", [object(), float("nan"), datetime(2024, 1, 1)])

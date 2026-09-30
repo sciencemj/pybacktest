@@ -49,9 +49,7 @@ class LongShortRisk:
                 "max_position_weight",
             )
             if position_weight <= _ZERO:
-                raise ConfigurationError(
-                    "max_position_weight must be positive."
-                )
+                raise ConfigurationError("max_position_weight must be positive.")
         if type(self.allow_short) is not bool:
             raise ConfigurationError("allow_short must be a bool.")
         object.__setattr__(self, "max_leverage", leverage)
@@ -81,9 +79,7 @@ class LongShortRisk:
             return _rejection(order.quantity, (code,), message)
 
         try:
-            with decimal_context(
-                _risk_arithmetic_values(self, order, context)
-            ):
+            with decimal_context(_risk_arithmetic_values(self, order, context)):
                 return self._evaluate_validated(order, context)
         except DecimalException:
             return _rejection(
@@ -111,9 +107,7 @@ class LongShortRisk:
             order.instrument,
             OrderSide.SELL,
         )
-        direction = (
-            Decimal("1") if order.side is OrderSide.BUY else Decimal("-1")
-        )
+        direction = Decimal("1") if order.side is OrderSide.BUY else Decimal("-1")
         candidates: list[tuple[str, Decimal]] = []
 
         if not self.allow_short and order.side is OrderSide.SELL:
@@ -179,9 +173,7 @@ class LongShortRisk:
 
         if order.side is OrderSide.BUY:
             affordability_price = (
-                order.limit_price
-                if order.type is OrderType.LIMIT
-                else mark
+                order.limit_price if order.type is OrderType.LIMIT else mark
             )
             if affordability_price is None:
                 return _rejection(
@@ -507,10 +499,7 @@ def _risk_arithmetic_values(
         context.snapshot.cash.amount,
         context.snapshot.equity.amount,
         policy.max_leverage,
-        *(
-            position.quantity.value
-            for position in context.snapshot.positions.values()
-        ),
+        *(position.quantity.value for position in context.snapshot.positions.values()),
         *(price.amount for price in context.prices.values()),
         *(
             value

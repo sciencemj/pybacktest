@@ -63,31 +63,18 @@ class MarketDataSet:
                 "series and instruments must be mappings."
             ) from exc
         if not series:
-            raise DataValidationError(
-                "MarketDataSet requires at least one instrument."
-            )
+            raise DataValidationError("MarketDataSet requires at least one instrument.")
         if set(series) != set(instruments):
-            raise DataValidationError(
-                "series and instrument metadata keys must match."
-            )
+            raise DataValidationError("series and instrument metadata keys must match.")
         if not isinstance(self.timeframe, Timeframe):
-            raise DataValidationError(
-                "dataset timeframe must be a Timeframe."
-            )
+            raise DataValidationError("dataset timeframe must be a Timeframe.")
         for instrument_id, bar_series in series.items():
             if not isinstance(instrument_id, InstrumentId):
-                raise DataValidationError(
-                    "series keys must be InstrumentId values."
-                )
+                raise DataValidationError("series keys must be InstrumentId values.")
             if not isinstance(bar_series, BarSeries):
-                raise DataValidationError(
-                    "series values must be BarSeries objects."
-                )
+                raise DataValidationError("series values must be BarSeries objects.")
             instrument = instruments[instrument_id]
-            if (
-                not isinstance(instrument, Instrument)
-                or instrument.id != instrument_id
-            ):
+            if not isinstance(instrument, Instrument) or instrument.id != instrument_id:
                 raise DataValidationError(
                     "instrument metadata must match its mapping key."
                 )
@@ -133,9 +120,7 @@ class MarketDataSet:
         boundary = self.timestamps[count - 1]
         sliced: dict[InstrumentId, BarSeries] = {}
         for instrument_id, series in self.series.items():
-            stop = int(
-                np.searchsorted(series.timestamps, boundary, side="right")
-            )
+            stop = int(np.searchsorted(series.timestamps, boundary, side="right"))
             if stop == 0:
                 raise ConfigurationError(
                     "dataset prefix would leave an instrument empty."

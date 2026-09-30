@@ -47,9 +47,7 @@ class FrozenMapping(Mapping[str, FrozenJSON]):
 
     def __post_init__(self) -> None:
         if isinstance(self._items, (str, bytes, bytearray)):
-            raise ResultValidationError(
-                "frozen mapping items must be key-value pairs."
-            )
+            raise ResultValidationError("frozen mapping items must be key-value pairs.")
         try:
             raw_items = tuple(self._items)
         except TypeError as error:
@@ -75,13 +73,9 @@ class FrozenMapping(Mapping[str, FrozenJSON]):
                 )
             key, value = pair
             if not isinstance(key, str):
-                raise ResultValidationError(
-                    "frozen mapping keys must be strings."
-                )
+                raise ResultValidationError("frozen mapping keys must be strings.")
             if key in seen:
-                raise ResultValidationError(
-                    "frozen mapping keys must be unique."
-                )
+                raise ResultValidationError("frozen mapping keys must be unique.")
             seen.add(key)
             copied.append((key, _freeze_json(value, active=set())))
         object.__setattr__(self, "_items", tuple(copied))
@@ -133,9 +127,7 @@ def _freeze_json(value: object, *, active: set[int]) -> FrozenJSON:
             copied: list[tuple[str, FrozenJSON]] = []
             for key, item in cast("Mapping[object, object]", value).items():
                 if not isinstance(key, str):
-                    raise ResultValidationError(
-                        "frozen mapping keys must be strings."
-                    )
+                    raise ResultValidationError("frozen mapping keys must be strings.")
                 copied.append((key, _freeze_json(item, active=active)))
             return FrozenMapping(tuple(copied))
         finally:
@@ -162,9 +154,7 @@ def freeze_json(value: object) -> FrozenJSON:
 
 def _token(value: object, field_name: str) -> str:
     if not isinstance(value, str) or _TOKEN_PATTERN.fullmatch(value) is None:
-        raise ResultValidationError(
-            f"{field_name} must be a stable lowercase token."
-        )
+        raise ResultValidationError(f"{field_name} must be a stable lowercase token.")
     return value
 
 
@@ -193,8 +183,10 @@ def _aware(value: object, field_name: str) -> datetime:
 
 
 def _nonempty_text(value: object, field_name: str) -> str:
-    if not isinstance(value, str) or not value.strip() or any(
-        ord(character) < 32 for character in value
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or any(ord(character) < 32 for character in value)
     ):
         raise ResultValidationError(f"{field_name} must be non-empty text.")
     return value
@@ -208,9 +200,7 @@ def _version(value: object, field_name: str) -> str:
 
 def _hash(value: object, field_name: str) -> str:
     if not isinstance(value, str) or _HASH_PATTERN.fullmatch(value) is None:
-        raise ResultValidationError(
-            f"{field_name} must be a lowercase SHA-256 digest."
-        )
+        raise ResultValidationError(f"{field_name} must be a lowercase SHA-256 digest.")
     return value
 
 
@@ -223,9 +213,7 @@ def _version_mapping(
     copied: dict[str, str] = {}
     for key, version in value.items():
         if not isinstance(key, str) or not key.strip():
-            raise ResultValidationError(
-                f"{field_name} keys must be non-empty strings."
-            )
+            raise ResultValidationError(f"{field_name} keys must be non-empty strings.")
         copied[key] = _version(version, f"{field_name}[{key!r}]")
     return FrozenMapping.from_mapping(copied)
 
@@ -279,9 +267,7 @@ class EngineEvent:
             or not isinstance(self.sequence, int)
             or self.sequence < 0
         ):
-            raise ResultValidationError(
-                "event sequence must be a nonnegative integer."
-            )
+            raise ResultValidationError("event sequence must be a nonnegative integer.")
         if not isinstance(self.stage, CausalStage):
             raise ResultValidationError("stage must be a CausalStage.")
         if not isinstance(self.code, EngineEventCode):
@@ -391,9 +377,7 @@ class MetricMetadata:
             _decimal(self.risk_free_rate, "risk_free_rate"),
         )
         if not isinstance(self.missing_policy, MissingPolicy):
-            raise ResultValidationError(
-                "missing_policy must be a MissingPolicy."
-            )
+            raise ResultValidationError("missing_policy must be a MissingPolicy.")
         if not isinstance(self.parameters, FrozenMapping):
             object.__setattr__(
                 self,
@@ -722,8 +706,7 @@ class BacktestResult:
         for timestamp in market_timestamps:
             _aware(timestamp, "market timestamp")
         if any(
-            current <= previous
-            for previous, current in pairwise(market_timestamps)
+            current <= previous for previous, current in pairwise(market_timestamps)
         ):
             raise ResultValidationError(
                 "market timestamps must be strictly increasing."
@@ -799,17 +782,13 @@ class BacktestResult:
                 expected_sequence
                 and event.timestamp < events[expected_sequence - 1].timestamp
             ):
-                raise ResultValidationError(
-                    "events must be timestamp-monotonic."
-                )
+                raise ResultValidationError("events must be timestamp-monotonic.")
             if event.order_id is not None and event.order_id not in order_by_id:
                 raise ResultValidationError(
                     "event order_id must reference a final order."
                 )
         if not all(isinstance(item, RunWarning) for item in warnings):
-            raise ResultValidationError(
-                "warnings must contain RunWarning values."
-            )
+            raise ResultValidationError("warnings must contain RunWarning values.")
         if warnings != self.summary.warnings:
             raise ResultValidationError(
                 "result warnings must match summary warnings exactly."

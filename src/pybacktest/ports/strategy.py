@@ -53,13 +53,10 @@ class PortfolioSnapshot:
 
     def __init__(self, positions: object) -> None:
         if not isinstance(positions, Mapping):
-            raise ConfigurationError(
-                "portfolio positions must be a mapping."
-            )
+            raise ConfigurationError("portfolio positions must be a mapping.")
         copied = dict(positions)
         if not all(
-            isinstance(instrument, InstrumentId)
-            and isinstance(quantity, Quantity)
+            isinstance(instrument, InstrumentId) and isinstance(quantity, Quantity)
             for instrument, quantity in copied.items()
         ):
             raise ConfigurationError(
@@ -97,30 +94,23 @@ class StrategyContext:
         try:
             normalized_timestamp = timestamp.astype("datetime64[ns]")
         except (AttributeError, TypeError, ValueError) as exc:
-            raise ConfigurationError(
-                "strategy timestamp must be valid."
-            ) from exc
+            raise ConfigurationError("strategy timestamp must be valid.") from exc
         if np.isnat(normalized_timestamp):
             raise ConfigurationError("strategy timestamp cannot be NaT.")
         try:
             positions = portfolio.positions
         except AttributeError as exc:
-            raise ConfigurationError(
-                "portfolio must expose positions."
-            ) from exc
+            raise ConfigurationError("portfolio must expose positions.") from exc
         normalized_portfolio = PortfolioSnapshot(positions=positions)
-        if (
-            isinstance(active_orders, (str, bytes, bytearray))
-            or not isinstance(active_orders, Sequence)
+        if isinstance(active_orders, (str, bytes, bytearray)) or not isinstance(
+            active_orders, Sequence
         ):
             raise ConfigurationError(
                 "active_orders must be a sequence of Order values."
             )
         normalized_orders = tuple(active_orders)
         if not all(isinstance(order, Order) for order in normalized_orders):
-            raise ConfigurationError(
-                "active_orders must contain only Order values."
-            )
+            raise ConfigurationError("active_orders must contain only Order values.")
         if not isinstance(features, FeatureView):
             raise ConfigurationError("features must be a FeatureView.")
         if features.timestamp != normalized_timestamp:
@@ -159,9 +149,8 @@ def validate_strategy_output(
     universe: Collection[InstrumentId],
 ) -> tuple[OrderIntent, ...]:
     """Return an immutable validated strategy-output sequence."""
-    if (
-        isinstance(intents, (str, bytes, bytearray))
-        or not isinstance(intents, Sequence)
+    if isinstance(intents, (str, bytes, bytearray)) or not isinstance(
+        intents, Sequence
     ):
         raise AdapterContractError(
             "strategy output must be a sequence of order intents."
@@ -180,9 +169,7 @@ def validate_strategy_output(
     cancelled: set[OrderId] = set()
     for intent in intents:
         if not isinstance(intent, _INTENT_TYPES):
-            raise AdapterContractError(
-                "strategy output contains a non-intent value."
-            )
+            raise AdapterContractError("strategy output contains a non-intent value.")
         if (
             isinstance(intent, _INSTRUMENT_INTENT_TYPES)
             and intent.instrument not in allowed

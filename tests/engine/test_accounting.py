@@ -182,9 +182,7 @@ def test_same_side_fills_use_quantity_weighted_average(side: OrderSide) -> None:
 def test_flat_position_resets_average_price(side: OrderSide) -> None:
     closing_side = OrderSide.SELL if side is OrderSide.BUY else OrderSide.BUY
     account = ledger()
-    account.apply_fill(
-        fill(AAPL.id, side, quantity="3", price="100", offset=0)
-    )
+    account.apply_fill(fill(AAPL.id, side, quantity="3", price="100", offset=0))
     snapshot = account.apply_fill(
         fill(
             AAPL.id,
@@ -306,12 +304,8 @@ def test_partial_close_allocates_book_cost_at_notional_quantum(
     unrealized: str,
 ) -> None:
     account = ledger()
-    account.apply_fill(
-        fill(AAPL.id, opening_side, quantity="1", price="100", offset=0)
-    )
-    account.apply_fill(
-        fill(AAPL.id, opening_side, quantity="2", price="101", offset=1)
-    )
+    account.apply_fill(fill(AAPL.id, opening_side, quantity="1", price="100", offset=0))
+    account.apply_fill(fill(AAPL.id, opening_side, quantity="2", price="101", offset=1))
     snapshot = account.apply_fill(
         fill(
             AAPL.id,
@@ -370,14 +364,10 @@ def test_snapshots_and_cash_events_are_frozen_and_defensive() -> None:
         instruments=catalog,
     )
     catalog.clear()
-    account.apply_fill(
-        fill(AAPL.id, OrderSide.BUY, quantity="1", price="100")
-    )
+    account.apply_fill(fill(AAPL.id, OrderSide.BUY, quantity="1", price="100"))
     snapshot = account.apply_cash_event(
         CashEvent(
-            id=CashEventId.parse(
-                "cash_event_00000000000000000000000000000000"
-            ),
+            id=CashEventId.parse("cash_event_00000000000000000000000000000000"),
             timestamp=BASE_DATETIME,
             amount=Money.usd("1"),
             code=CashEventCode.EXTERNAL_FLOW,
@@ -587,14 +577,10 @@ def test_large_aligned_fill_reconciles_beyond_default_decimal_context() -> None:
 
 def test_non_monotonic_fill_cash_and_mark_timestamps_are_rejected() -> None:
     operations = (
-        lambda account: account.apply_fill(
-            fill(AAPL.id, OrderSide.BUY, offset=0)
-        ),
+        lambda account: account.apply_fill(fill(AAPL.id, OrderSide.BUY, offset=0)),
         lambda account: account.apply_cash_event(
             CashEvent(
-                id=CashEventId.parse(
-                    "cash_event_00000000000000000000000000000000"
-                ),
+                id=CashEventId.parse("cash_event_00000000000000000000000000000000"),
                 timestamp=BASE_DATETIME,
                 amount=Money.usd("1"),
                 code=CashEventCode.EXTERNAL_FLOW,
@@ -642,9 +628,7 @@ def test_invalid_mark_is_rejected_before_state_mutation(
 def test_cash_event_rejects_naive_time_and_wrong_currency() -> None:
     with pytest.raises(AccountingInvariantError, match="timezone-aware"):
         CashEvent(
-            id=CashEventId.parse(
-                "cash_event_00000000000000000000000000000000"
-            ),
+            id=CashEventId.parse("cash_event_00000000000000000000000000000000"),
             timestamp=datetime(2024, 1, 2),
             amount=Money.usd("1"),
             code=CashEventCode.EXTERNAL_FLOW,
@@ -690,9 +674,7 @@ def test_cash_event_preserves_significance_beyond_default_decimal_context() -> N
 
     snapshot = account.apply_cash_event(event)
 
-    assert snapshot.cash.amount == Decimal(
-        "9999999999999999999999999999.01"
-    )
+    assert snapshot.cash.amount == Decimal("9999999999999999999999999999.01")
 
 
 def test_constructor_requires_one_consistent_base_currency_catalog() -> None:

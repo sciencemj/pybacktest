@@ -26,12 +26,10 @@ class _IdentifierOrdinals:
     def __init__(self, result: BacktestResult) -> None:
         self._run = {result.run_id.value: "run:0"}
         self._orders = {
-            item.id.value: f"order:{index}"
-            for index, item in enumerate(result.orders)
+            item.id.value: f"order:{index}" for index, item in enumerate(result.orders)
         }
         self._fills = {
-            item.id.value: f"fill:{index}"
-            for index, item in enumerate(result.fills)
+            item.id.value: f"fill:{index}" for index, item in enumerate(result.fills)
         }
         cash_ids: dict[str, str] = {}
         for snapshot in result.snapshots:
@@ -82,9 +80,13 @@ def _type_name(value: object) -> str:
 def _aware_utc(value: datetime) -> str:
     if value.tzinfo is None or value.utcoffset() is None:
         raise SerializationError("datetime values must be timezone-aware.")
-    return value.astimezone(UTC).isoformat(timespec="microseconds").replace(
-        "+00:00",
-        "Z",
+    return (
+        value.astimezone(UTC)
+        .isoformat(timespec="microseconds")
+        .replace(
+            "+00:00",
+            "Z",
+        )
     )
 
 

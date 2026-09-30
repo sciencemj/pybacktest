@@ -83,14 +83,8 @@ def market_dataset(
 ) -> MarketDataSet:
     """Return a daily dataset from complete per-instrument series."""
     return MarketDataSet(
-        series={
-            item.id: series
-            for item, series in series_by_instrument.items()
-        },
-        instruments={
-            item.id: item
-            for item in series_by_instrument
-        },
+        series={item.id: series for item, series in series_by_instrument.items()},
+        instruments={item.id: item for item in series_by_instrument},
         timeframe=Timeframe.days(1),
     )
 
@@ -243,15 +237,11 @@ def portfolio_snapshot(
     for instrument_id in requested_positions:
         raw_mark = requested_prices.get(instrument_id, "100")
         marks[instrument_id] = (
-            raw_mark
-            if isinstance(raw_mark, Money)
-            else Money.of(raw_mark, currency)
+            raw_mark if isinstance(raw_mark, Money) else Money.of(raw_mark, currency)
         )
     for instrument_id, raw_mark in requested_prices.items():
         marks[instrument_id] = (
-            raw_mark
-            if isinstance(raw_mark, Money)
-            else Money.of(raw_mark, currency)
+            raw_mark if isinstance(raw_mark, Money) else Money.of(raw_mark, currency)
         )
 
     built_positions: dict[InstrumentId, Position] = {}
@@ -266,9 +256,7 @@ def portfolio_snapshot(
         built_positions[instrument_id] = Position(
             instrument=instrument_id,
             quantity=quantity,
-            average_price=(
-                None if quantity.value == Decimal("0") else mark
-            ),
+            average_price=(None if quantity.value == Decimal("0") else mark),
             book_cost=Money.of(
                 abs(quantity.value) * mark.amount,
                 currency,
@@ -306,9 +294,7 @@ def risk_context(
     """Return deterministic current data and proposed-order identity."""
     current_snapshot = snapshot or portfolio_snapshot()
     requested_prices = (
-        dict(prices)
-        if prices is not None
-        else dict(current_snapshot.valuation_prices)
+        dict(prices) if prices is not None else dict(current_snapshot.valuation_prices)
     )
     instrument_catalog = (
         dict(instruments)
@@ -349,13 +335,8 @@ def risk_context(
         snapshot=current_snapshot,
         prices=normalized_prices,
         instruments=instrument_catalog,
-        tradable=frozenset(
-            tradable
-            if tradable is not None
-            else instrument_catalog
-        ),
-        order_id=order_id
-        or OrderId.parse("order_" + "7" * 32),
+        tradable=frozenset(tradable if tradable is not None else instrument_catalog),
+        order_id=order_id or OrderId.parse("order_" + "7" * 32),
         submitted_at=submitted_at,
         active_from=active_from or submitted_at + timedelta(days=1),
         active_orders=tuple(active_orders),

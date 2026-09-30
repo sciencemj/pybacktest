@@ -1,0 +1,30 @@
+name: Performance gate
+
+# Runtime and peak-RSS budgets are machine-specific (see benchmarks/README.md),
+# so this gate never runs on push or pull request. Dispatch it manually and
+# pick the runner whose hardware matches the reference measurement.
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner label to execute the gate on
+        required: true
+        default: ubuntu-latest
+
+permissions:
+  contents: read
+
+jobs:
+  performance:
+    name: Engine benchmark (${{ inputs.runner }})
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - name: Performance gate
+        run: >-
+          uv run --locked python -m pytest -m performance
+          benchmarks/test_engine_benchmark.py -q -s

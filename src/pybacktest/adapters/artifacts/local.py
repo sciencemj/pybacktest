@@ -50,9 +50,13 @@ _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 
 
 def _utc_text(value: datetime) -> str:
-    return value.astimezone(UTC).isoformat(timespec="microseconds").replace(
-        "+00:00",
-        "Z",
+    return (
+        value.astimezone(UTC)
+        .isoformat(timespec="microseconds")
+        .replace(
+            "+00:00",
+            "Z",
+        )
     )
 
 
@@ -64,9 +68,7 @@ def _warning_document(warning: RunWarning) -> dict[str, object]:
     return {
         "code": warning.code.value,
         "message": warning.message,
-        "metric": (
-            warning.metric.value if warning.metric is not None else None
-        ),
+        "metric": (warning.metric.value if warning.metric is not None else None),
         "details": warning.details,
     }
 
@@ -116,14 +118,8 @@ def _config_bytes(result: BacktestResult) -> bytes:
 def _summary_bytes(summary: SummaryMetrics) -> bytes:
     return canonical_json_bytes(
         {
-            "metrics": [
-                _metric_document(metric)
-                for metric in summary.results
-            ],
-            "warnings": [
-                _warning_document(warning)
-                for warning in summary.warnings
-            ],
+            "metrics": [_metric_document(metric) for metric in summary.results],
+            "warnings": [_warning_document(warning) for warning in summary.warnings],
         }
     )
 
@@ -159,12 +155,8 @@ def _equity_rows(
                 [
                     {
                         "instrument": str(instrument_id),
-                        "amount": str(
-                            snapshot.valuation_prices[instrument_id].amount
-                        ),
-                        "currency": (
-                            snapshot.valuation_prices[instrument_id].currency
-                        ),
+                        "amount": str(snapshot.valuation_prices[instrument_id].amount),
+                        "currency": (snapshot.valuation_prices[instrument_id].currency),
                     }
                     for instrument_id in sorted(
                         snapshot.valuation_prices,
@@ -219,9 +211,7 @@ def _position_rows(
                     "book_cost": str(position.book_cost.amount),
                     "realized_pnl": str(position.realized_pnl.amount),
                     "valuation_price": (
-                        str(valuation.amount)
-                        if valuation is not None
-                        else None
+                        str(valuation.amount) if valuation is not None else None
                     ),
                     "market_value": str(market_value),
                     "currency": snapshot.equity.currency,
@@ -241,9 +231,7 @@ def _order_rows(orders: Sequence[Order]) -> list[dict[str, object]]:
             "quantity": str(order.quantity.value),
             "quote_currency": order.quote_currency,
             "limit_price": (
-                str(order.limit_price.amount)
-                if order.limit_price is not None
-                else None
+                str(order.limit_price.amount) if order.limit_price is not None else None
             ),
             "time_in_force": order.time_in_force.value,
             "submitted_at": _utc_text(order.submitted_at),
@@ -284,11 +272,7 @@ def _event_rows(
             "timestamp": _utc_text(event.timestamp),
             "stage": event.stage.value,
             "code": event.code.value,
-            "order_id": (
-                str(event.order_id)
-                if event.order_id is not None
-                else None
-            ),
+            "order_id": (str(event.order_id) if event.order_id is not None else None),
             "details": _details(event.details),
             "message": event.message,
         }
@@ -577,9 +561,7 @@ def _verify_root_identity(root: _PinnedRoot) -> None:
             or stat.S_ISLNK(current.st_mode)
             or (current.st_dev, current.st_ino) != entry.identity
         ):
-            _unsafe_root(
-                "artifact root identity changed during publication."
-            )
+            _unsafe_root("artifact root identity changed during publication.")
 
 
 def _fsync_directory(descriptor: int) -> None:
@@ -670,10 +652,7 @@ def _cleanup_temp(
             dir_fd=temp_fd,
             follow_symlinks=False,
         )
-        if not (
-            stat.S_ISREG(entry_stat.st_mode)
-            or stat.S_ISLNK(entry_stat.st_mode)
-        ):
+        if not (stat.S_ISREG(entry_stat.st_mode) or stat.S_ISLNK(entry_stat.st_mode)):
             return
     for name in names:
         os.unlink(name, dir_fd=temp_fd)
@@ -763,22 +742,12 @@ class LocalArtifactStore:
         try:
             raw_root = os.fspath(root)
         except TypeError as error:
-            raise ResultValidationError(
-                "artifact root must be path-like."
-            ) from error
-        if (
-            not isinstance(raw_root, str)
-            or not raw_root
-            or "\x00" in raw_root
-        ):
-            raise ResultValidationError(
-                "artifact root must be a non-empty text path."
-            )
+            raise ResultValidationError("artifact root must be path-like.") from error
+        if not isinstance(raw_root, str) or not raw_root or "\x00" in raw_root:
+            raise ResultValidationError("artifact root must be a non-empty text path.")
         normalized = os.path.abspath(os.path.normpath(raw_root))
         if normalized == Path(normalized).anchor:
-            raise ResultValidationError(
-                "filesystem root is not a safe artifact root."
-            )
+            raise ResultValidationError("filesystem root is not a safe artifact root.")
         if max_bytes is not None and (
             isinstance(max_bytes, bool)
             or not isinstance(max_bytes, int)
@@ -816,10 +785,7 @@ class LocalArtifactStore:
             try:
                 lock_descriptor = os.open(
                     lock_name,
-                    os.O_WRONLY
-                    | os.O_CREAT
-                    | os.O_EXCL
-                    | _O_NOFOLLOW,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW,
                     0o600,
                     dir_fd=root.fd,
                 )
@@ -870,15 +836,9 @@ class LocalArtifactStore:
                 )
                 written.append(artifact_file)
                 total_bytes += artifact_file.size_bytes
-                if (
-                    self._max_bytes is not None
-                    and total_bytes > self._max_bytes
-                ):
+                if self._max_bytes is not None and total_bytes > self._max_bytes:
                     raise AdapterContractError(
-                        (
-                            f"artifact exceeds max_bytes={self._max_bytes} "
-                            f"after {name}."
-                        ),
+                        (f"artifact exceeds max_bytes={self._max_bytes} after {name}."),
                         code="artifact_size_limit",
                     )
                 return artifact_file

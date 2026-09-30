@@ -55,31 +55,17 @@ class BacktestEngine:
         risk_policy: RiskPolicy | None = None,
     ) -> None:
         if not callable(getattr(data_source, "load", None)):
-            raise ConfigurationError(
-                "data_source must expose a callable load method."
-            )
+            raise ConfigurationError("data_source must expose a callable load method.")
         if not callable(getattr(broker_factory, "create", None)):
             raise ConfigurationError(
                 "broker_factory must expose a callable create method."
             )
-        resolved_sizer = (
-            DefaultOrderSizer()
-            if order_sizer is None
-            else order_sizer
-        )
-        resolved_risk = (
-            _AllowAllRisk()
-            if risk_policy is None
-            else risk_policy
-        )
+        resolved_sizer = DefaultOrderSizer() if order_sizer is None else order_sizer
+        resolved_risk = _AllowAllRisk() if risk_policy is None else risk_policy
         if not isinstance(resolved_sizer, OrderSizer):
-            raise ConfigurationError(
-                "order_sizer must implement OrderSizer."
-            )
+            raise ConfigurationError("order_sizer must implement OrderSizer.")
         if not isinstance(resolved_risk, RiskPolicy):
-            raise ConfigurationError(
-                "risk_policy must implement RiskPolicy."
-            )
+            raise ConfigurationError("risk_policy must implement RiskPolicy.")
         self._data_source = data_source
         self._broker_factory = broker_factory
         self._order_sizer = resolved_sizer
@@ -102,33 +88,17 @@ class BacktestEngine:
         external-action session with deterministic external provenance.
         """
         if not isinstance(simulation, SimulationRequest):
-            raise ConfigurationError(
-                "simulation must be a SimulationRequest."
-            )
+            raise ConfigurationError("simulation must be a SimulationRequest.")
         if not isinstance(feature_plan, FeaturePlan):
-            raise ConfigurationError(
-                "feature_plan must be a FeaturePlan."
-            )
+            raise ConfigurationError("feature_plan must be a FeaturePlan.")
         if run_id is not None and not isinstance(run_id, RunId):
             raise ConfigurationError("run_id must be a RunId when provided.")
-        resolved_sizer = (
-            self._order_sizer
-            if order_sizer is None
-            else order_sizer
-        )
-        resolved_risk = (
-            self._risk_policy
-            if risk_policy is None
-            else risk_policy
-        )
+        resolved_sizer = self._order_sizer if order_sizer is None else order_sizer
+        resolved_risk = self._risk_policy if risk_policy is None else risk_policy
         if not isinstance(resolved_sizer, OrderSizer):
-            raise ConfigurationError(
-                "order_sizer override must implement OrderSizer."
-            )
+            raise ConfigurationError("order_sizer override must implement OrderSizer.")
         if not isinstance(resolved_risk, RiskPolicy):
-            raise ConfigurationError(
-                "risk_policy override must implement RiskPolicy."
-            )
+            raise ConfigurationError("risk_policy override must implement RiskPolicy.")
         return SimulationSession(
             simulation=simulation,
             feature_plan=feature_plan,
@@ -149,9 +119,7 @@ class BacktestEngine:
     ) -> BacktestResult:
         """Drive exactly the public session reset/context/advance loop."""
         if not isinstance(request, BacktestRequest):
-            raise ConfigurationError(
-                "request must be a BacktestRequest."
-            )
+            raise ConfigurationError("request must be a BacktestRequest.")
         builder = FeatureBuilder()
         feature_plan = request.strategy.build_features(builder)
         if not isinstance(feature_plan, FeaturePlan):

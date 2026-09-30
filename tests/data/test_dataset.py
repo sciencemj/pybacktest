@@ -30,9 +30,7 @@ MSFT = replace(AAPL, id=InstrumentId.parse("XNAS:MSFT"))
 
 def bar_series(**overrides: object) -> BarSeries:
     arguments: dict[str, object] = {
-        "timestamps": np.array(
-            ["2024-01-02", "2024-01-03"], dtype="datetime64[D]"
-        ),
+        "timestamps": np.array(["2024-01-02", "2024-01-03"], dtype="datetime64[D]"),
         "open": np.array([100, 101], dtype=np.int64),
         "high": np.array([102, 103], dtype=np.float32),
         "low": [99, 100],
@@ -105,9 +103,7 @@ def test_bar_series_rejects_unequal_column_lengths():
 
 @pytest.mark.parametrize("column", ["open", "high", "low", "close", "volume"])
 @pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
-def test_bar_series_rejects_nonfinite_ohlcv(
-    column: str, value: float
-):
+def test_bar_series_rejects_nonfinite_ohlcv(column: str, value: float):
     with pytest.raises(DataValidationError, match="finite"):
         bar_series(**{column: [value, 1.0]})
 
@@ -127,18 +123,14 @@ def test_bar_series_rejects_negative_volume():
 def test_bar_series_rejects_duplicate_timestamps():
     with pytest.raises(DataValidationError, match="duplicate"):
         bar_series(
-            timestamps=np.array(
-                ["2024-01-02", "2024-01-02"], dtype="datetime64[ns]"
-            )
+            timestamps=np.array(["2024-01-02", "2024-01-02"], dtype="datetime64[ns]")
         )
 
 
 def test_bar_series_rejects_decreasing_timestamps():
     with pytest.raises(DataValidationError, match="increasing"):
         bar_series(
-            timestamps=np.array(
-                ["2024-01-03", "2024-01-02"], dtype="datetime64[ns]"
-            )
+            timestamps=np.array(["2024-01-03", "2024-01-02"], dtype="datetime64[ns]")
         )
 
 
@@ -235,12 +227,11 @@ def test_dataset_fingerprint_is_canonical_across_mapping_order():
         ("volume", [1_000.0, 2_001.0]),
     ],
 )
-def test_dataset_fingerprint_changes_with_any_bar_column(
-    field: str, values: object
-):
-    assert dataset().fingerprint != dataset(
-        series=bar_series(**{field: values})
-    ).fingerprint
+def test_dataset_fingerprint_changes_with_any_bar_column(field: str, values: object):
+    assert (
+        dataset().fingerprint
+        != dataset(series=bar_series(**{field: values})).fingerprint
+    )
 
 
 @pytest.mark.parametrize(
@@ -259,9 +250,7 @@ def test_dataset_fingerprint_changes_with_instrument_metadata(
 
 
 def test_dataset_fingerprint_changes_with_typed_timeframe():
-    assert dataset().fingerprint != dataset(
-        timeframe=Timeframe.days(2)
-    ).fingerprint
+    assert dataset().fingerprint != dataset(timeframe=Timeframe.days(2)).fingerprint
 
 
 def test_bar_view_and_market_slice_are_immutable_current_timestamp_views():
@@ -303,12 +292,8 @@ def test_market_slice_rejects_stale_bar_as_tradable():
 
 def test_union_calendar_keeps_dates_seen_by_only_one_instrument():
     timestamps = {
-        AAPL.id: np.array(
-            ["2024-01-02", "2024-01-03"], dtype="datetime64[ns]"
-        ),
-        MSFT.id: np.array(
-            ["2024-01-03", "2024-01-04"], dtype="datetime64[ns]"
-        ),
+        AAPL.id: np.array(["2024-01-02", "2024-01-03"], dtype="datetime64[ns]"),
+        MSFT.id: np.array(["2024-01-03", "2024-01-04"], dtype="datetime64[ns]"),
     }
     calendar = CalendarPolicy.union(max_staleness_bars=1).build(timestamps)
 
@@ -336,19 +321,13 @@ def test_calendar_array_cannot_be_made_writeable_again():
 
 def test_intersection_calendar_keeps_only_shared_dates():
     timestamps = {
-        AAPL.id: np.array(
-            ["2024-01-02", "2024-01-03"], dtype="datetime64[ns]"
-        ),
-        MSFT.id: np.array(
-            ["2024-01-03", "2024-01-04"], dtype="datetime64[ns]"
-        ),
+        AAPL.id: np.array(["2024-01-02", "2024-01-03"], dtype="datetime64[ns]"),
+        MSFT.id: np.array(["2024-01-03", "2024-01-04"], dtype="datetime64[ns]"),
     }
 
     calendar = CalendarPolicy.intersection().build(timestamps)
 
-    assert calendar.astype("datetime64[D]").astype(str).tolist() == [
-        "2024-01-03"
-    ]
+    assert calendar.astype("datetime64[D]").astype(str).tolist() == ["2024-01-03"]
     assert CalendarPolicy.intersection().max_staleness_bars == 0
 
 

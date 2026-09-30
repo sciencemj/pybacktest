@@ -54,9 +54,7 @@ def _finite_decimal(value: object, field_name: str) -> Decimal:
     try:
         result = Decimal(str(value))
     except (TypeError, ValueError, DecimalException) as error:
-        raise ResultValidationError(
-            f"{field_name} must be a finite number."
-        ) from error
+        raise ResultValidationError(f"{field_name} must be a finite number.") from error
     if not result.is_finite():
         raise ResultValidationError(f"{field_name} must be a finite number.")
     return result
@@ -133,9 +131,7 @@ def _bounded_fraction(value: Fraction) -> Fraction:
 def _exact_fraction(value: Decimal) -> Fraction:
     exponent = value.as_tuple().exponent
     if not isinstance(exponent, int):
-        raise ExactDecimalError(
-            "win-rate arithmetic requires a finite Decimal."
-        )
+        raise ExactDecimalError("win-rate arithmetic requires a finite Decimal.")
     if (
         len(value.as_tuple().digits) > MAX_EXACT_DIGITS
         or abs(exponent) > MAX_EXACT_DIGITS
@@ -157,14 +153,12 @@ def _closing_leg_win_rate(fills: Sequence[Fill]) -> Decimal | None:
         )
         fill_quantity = _exact_fraction(fill.quantity.value)
         fill_price = _exact_fraction(fill.price.amount)
-        signed_fill = (
-            fill_quantity
-            if fill.side.value == "buy"
-            else -fill_quantity
-        )
-        if old_quantity == 0 or (
-            old_quantity > 0 and signed_fill > 0
-        ) or (old_quantity < 0 and signed_fill < 0):
+        signed_fill = fill_quantity if fill.side.value == "buy" else -fill_quantity
+        if (
+            old_quantity == 0
+            or (old_quantity > 0 and signed_fill > 0)
+            or (old_quantity < 0 and signed_fill < 0)
+        ):
             new_quantity = _bounded_fraction(old_quantity + signed_fill)
             new_book_cost = _bounded_fraction(
                 old_book_cost + abs(signed_fill) * fill_price
@@ -188,9 +182,7 @@ def _closing_leg_win_rate(fills: Sequence[Fill]) -> Decimal | None:
             positions[fill.instrument] = (
                 new_quantity,
                 _bounded_fraction(
-                    old_book_cost
-                    * abs(new_quantity)
-                    / abs(old_quantity)
+                    old_book_cost * abs(new_quantity) / abs(old_quantity)
                 ),
             )
         else:
@@ -200,9 +192,7 @@ def _closing_leg_win_rate(fills: Sequence[Fill]) -> Decimal | None:
             )
     if nonzero == 0:
         return None
-    with localcontext(
-        calculation_context(Decimal(profitable), Decimal(nonzero))
-    ):
+    with localcontext(calculation_context(Decimal(profitable), Decimal(nonzero))):
         return Decimal(profitable) / Decimal(nonzero)
 
 
@@ -247,19 +237,12 @@ def calculate_metrics(
         raise ResultValidationError("snapshots must be a sequence.")
     copied_snapshots = tuple(snapshots)
     if not all(
-        isinstance(snapshot, PortfolioSnapshot)
-        for snapshot in copied_snapshots
+        isinstance(snapshot, PortfolioSnapshot) for snapshot in copied_snapshots
     ):
-        raise ResultValidationError(
-            "snapshots must contain PortfolioSnapshot values."
-        )
-    snapshot_timestamps = tuple(
-        snapshot.timestamp for snapshot in copied_snapshots
-    )
+        raise ResultValidationError("snapshots must contain PortfolioSnapshot values.")
+    snapshot_timestamps = tuple(snapshot.timestamp for snapshot in copied_snapshots)
     if any(timestamp is None for timestamp in snapshot_timestamps):
-        raise ResultValidationError(
-            "metric snapshots must have aware timestamps."
-        )
+        raise ResultValidationError("metric snapshots must have aware timestamps.")
     if any(
         current < previous
         for previous, current in pairwise(snapshot_timestamps)
@@ -301,13 +284,9 @@ def calculate_metrics(
                 )
             else:
                 try:
-                    metric_values[MetricName.TOTAL_RETURN] = (
-                        values[-1] / initial - _ONE
-                    )
+                    metric_values[MetricName.TOTAL_RETURN] = values[-1] / initial - _ONE
                 except DecimalException:
-                    warnings.append(
-                        _numeric_warning(MetricName.TOTAL_RETURN)
-                    )
+                    warnings.append(_numeric_warning(MetricName.TOTAL_RETURN))
 
             if values[0] <= _ZERO or values[-1] <= _ZERO:
                 warnings.append(
@@ -319,9 +298,7 @@ def calculate_metrics(
                 )
             else:
                 intervals = Decimal(len(values) - 1)
-                exponent = (
-                    Decimal(config.annualization_periods) / intervals
-                )
+                exponent = Decimal(config.annualization_periods) / intervals
                 try:
                     cagr = (values[-1] / values[0]) ** exponent - _ONE
                     if not cagr.is_finite():
@@ -349,24 +326,17 @@ def calculate_metrics(
                         break
                     drawdowns.append(value / running_peak - _ONE)
                 if drawdown_is_valid:
-                    metric_values[MetricName.MAXIMUM_DRAWDOWN] = min(
-                        drawdowns
-                    )
+                    metric_values[MetricName.MAXIMUM_DRAWDOWN] = min(drawdowns)
                 else:
                     warnings.append(
                         _warning(
                             MetricName.MAXIMUM_DRAWDOWN,
                             "metric.nonpositive_denominator",
-                            (
-                                "maximum_drawdown requires positive running "
-                                "peak equity."
-                            ),
+                            ("maximum_drawdown requires positive running peak equity."),
                         )
                     )
             except DecimalException:
-                warnings.append(
-                    _numeric_warning(MetricName.MAXIMUM_DRAWDOWN)
-                )
+                warnings.append(_numeric_warning(MetricName.MAXIMUM_DRAWDOWN))
 
             returns: list[Decimal] = []
             invalid_return_denominator = False
@@ -404,9 +374,7 @@ def calculate_metrics(
                             (
                                 f"{metric.value} encountered zero prior equity."
                                 if invalid_return_denominator
-                                else (
-                                    f"{metric.value} requires at least two returns."
-                                )
+                                else (f"{metric.value} requires at least two returns.")
                             ),
                         )
                     )
@@ -419,17 +387,11 @@ def calculate_metrics(
                         _ZERO,
                     ) / Decimal(len(returns) - 1)
                     sample_std = variance.sqrt()
-                    annual_root = Decimal(
-                        config.annualization_periods
-                    ).sqrt()
-                    metric_values[MetricName.VOLATILITY] = (
-                        sample_std * annual_root
-                    )
+                    annual_root = Decimal(config.annualization_periods).sqrt()
+                    metric_values[MetricName.VOLATILITY] = sample_std * annual_root
                 except DecimalException:
                     sample_std = None
-                    warnings.append(
-                        _numeric_warning(MetricName.VOLATILITY)
-                    )
+                    warnings.append(_numeric_warning(MetricName.VOLATILITY))
                     warnings.append(_numeric_warning(MetricName.SHARPE))
                 if sample_std is not None:
                     if sample_std == _ZERO:
@@ -442,16 +404,12 @@ def calculate_metrics(
                         )
                     else:
                         try:
-                            periodic_rf = (
-                                config.risk_free_rate
-                                / Decimal(config.annualization_periods)
+                            periodic_rf = config.risk_free_rate / Decimal(
+                                config.annualization_periods
                             )
                             mean_excess = (
                                 sum(
-                                    (
-                                        item - periodic_rf
-                                        for item in returns
-                                    ),
+                                    (item - periodic_rf for item in returns),
                                     _ZERO,
                                 )
                                 / count
@@ -460,9 +418,7 @@ def calculate_metrics(
                                 mean_excess / sample_std * annual_root
                             )
                         except DecimalException:
-                            warnings.append(
-                                _numeric_warning(MetricName.SHARPE)
-                            )
+                            warnings.append(_numeric_warning(MetricName.SHARPE))
 
             if returns_numeric_error:
                 pass
@@ -484,17 +440,13 @@ def calculate_metrics(
                 )
             else:
                 try:
-                    periodic_rf = (
-                        config.risk_free_rate
-                        / Decimal(config.annualization_periods)
+                    periodic_rf = config.risk_free_rate / Decimal(
+                        config.annualization_periods
                     )
                     excess = tuple(item - periodic_rf for item in returns)
                     downside_rms = (
                         sum(
-                            (
-                                min(item, _ZERO) ** 2
-                                for item in excess
-                            ),
+                            (min(item, _ZERO) ** 2 for item in excess),
                             _ZERO,
                         )
                         / Decimal(len(excess))
@@ -504,10 +456,7 @@ def calculate_metrics(
                             _warning(
                                 MetricName.SORTINO,
                                 "metric.zero_denominator",
-                                (
-                                    "sortino requires nonzero downside "
-                                    "deviation."
-                                ),
+                                ("sortino requires nonzero downside deviation."),
                             )
                         )
                     else:
@@ -515,14 +464,10 @@ def calculate_metrics(
                             sum(excess, _ZERO)
                             / Decimal(len(excess))
                             / downside_rms
-                            * Decimal(
-                                config.annualization_periods
-                            ).sqrt()
+                            * Decimal(config.annualization_periods).sqrt()
                         )
                 except DecimalException:
-                    warnings.append(
-                        _numeric_warning(MetricName.SORTINO)
-                    )
+                    warnings.append(_numeric_warning(MetricName.SORTINO))
 
         if values:
             try:
@@ -542,20 +487,13 @@ def calculate_metrics(
                         exact_multiply(
                             fill.quantity.value,
                             fill.price.amount,
-                        )
-                        .copy_abs()
+                        ).copy_abs()
                         for fill in copied_fills
                     )
-                    with localcontext(
-                        calculation_context(fill_notional, mean_equity)
-                    ):
-                        metric_values[MetricName.TURNOVER] = (
-                            fill_notional / mean_equity
-                        )
+                    with localcontext(calculation_context(fill_notional, mean_equity)):
+                        metric_values[MetricName.TURNOVER] = fill_notional / mean_equity
             except (DecimalException, ExactDecimalError):
-                warnings.append(
-                    _numeric_warning(MetricName.TURNOVER)
-                )
+                warnings.append(_numeric_warning(MetricName.TURNOVER))
         else:
             warnings.append(
                 _warning(
@@ -575,19 +513,14 @@ def calculate_metrics(
                     _warning(
                         MetricName.WIN_RATE,
                         "metric.unavailable_closing_legs",
-                        (
-                            "win_rate requires at least one nonzero gross "
-                            "closing leg."
-                        ),
+                        ("win_rate requires at least one nonzero gross closing leg."),
                     )
                 )
             else:
                 metric_values[MetricName.WIN_RATE] = win_rate
 
         valid_snapshots = tuple(
-            snapshot
-            for snapshot in copied_snapshots
-            if snapshot.equity.amount > _ZERO
+            snapshot for snapshot in copied_snapshots if snapshot.equity.amount > _ZERO
         )
         excluded = len(copied_snapshots) - len(valid_snapshots)
         for metric in (
@@ -599,10 +532,7 @@ def calculate_metrics(
                     _warning(
                         metric,
                         "metric.excluded_nonpositive_equity",
-                        (
-                            f"{metric.value} excluded snapshots with "
-                            "nonpositive equity."
-                        ),
+                        (f"{metric.value} excluded snapshots with nonpositive equity."),
                         excluded_observations=excluded,
                     )
                 )
@@ -635,10 +565,7 @@ def calculate_metrics(
                     _warning(
                         metric,
                         "metric.insufficient_observations",
-                        (
-                            f"{metric.value} requires a positive-equity "
-                            "snapshot."
-                        ),
+                        (f"{metric.value} requires a positive-equity snapshot."),
                     )
                 )
 

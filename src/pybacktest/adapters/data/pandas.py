@@ -14,9 +14,7 @@ from pybacktest.domain.errors import (
 from pybacktest.domain.instruments import Instrument, InstrumentId
 from pybacktest.domain.time import DateRange, Timeframe
 
-_COLUMNS = frozenset(
-    {"instrument", "open", "high", "low", "close", "volume"}
-)
+_COLUMNS = frozenset({"instrument", "open", "high", "low", "close", "volume"})
 _NUMERIC_COLUMNS = ("open", "high", "low", "close", "volume")
 
 
@@ -74,9 +72,9 @@ class PandasDataSource:
                     "from the requested period."
                 )
             loaded[instrument_id] = BarSeries(
-                timestamps=instrument_frame.index.tz_localize(
-                    None
-                ).to_numpy(dtype="datetime64[ns]"),
+                timestamps=instrument_frame.index.tz_localize(None).to_numpy(
+                    dtype="datetime64[ns]"
+                ),
                 open=instrument_frame["open"].to_numpy(),
                 high=instrument_frame["high"].to_numpy(),
                 low=instrument_frame["low"].to_numpy(),
@@ -97,33 +95,22 @@ class PandasDataSource:
 def _validate_schema(frame: pd.DataFrame) -> None:
     if len(frame.columns) != len(_COLUMNS) or set(frame.columns) != _COLUMNS:
         expected = ", ".join(sorted(_COLUMNS))
-        raise DataValidationError(
-            f"frame columns must be exactly: {expected}."
-        )
+        raise DataValidationError(f"frame columns must be exactly: {expected}.")
     for column in _NUMERIC_COLUMNS:
         dtype = frame[column].dtype
-        if (
-            not pd.api.types.is_numeric_dtype(dtype)
-            or pd.api.types.is_bool_dtype(dtype)
+        if not pd.api.types.is_numeric_dtype(dtype) or pd.api.types.is_bool_dtype(
+            dtype
         ):
-            raise DataValidationError(
-                f"{column} column must use a numeric dtype."
-            )
+            raise DataValidationError(f"{column} column must use a numeric dtype.")
 
 
 def _validate_utc_index(index: pd.Index) -> None:
     if not isinstance(index, pd.DatetimeIndex):
-        raise DataValidationError(
-            "frame index must be a UTC-aware DatetimeIndex."
-        )
+        raise DataValidationError("frame index must be a UTC-aware DatetimeIndex.")
     if index.tz is None or str(index.tz) not in {"UTC", "Etc/UTC"}:
-        raise DataValidationError(
-            "frame index must use the UTC timezone."
-        )
+        raise DataValidationError("frame index must use the UTC timezone.")
     if index.hasnans:
-        raise DataValidationError(
-            "frame index cannot contain NaT timestamps."
-        )
+        raise DataValidationError("frame index cannot contain NaT timestamps.")
 
 
 def _canonical_instrument_values(
@@ -158,28 +145,15 @@ def _validate_universe(
 ) -> tuple[InstrumentId, ...]:
     requested = tuple(universe)
     if not requested:
-        raise DataValidationError(
-            "universe requires at least one instrument."
-        )
-    if any(
-        not isinstance(instrument_id, InstrumentId)
-        for instrument_id in requested
-    ):
-        raise DataValidationError(
-            "universe values must be InstrumentId objects."
-        )
+        raise DataValidationError("universe requires at least one instrument.")
+    if any(not isinstance(instrument_id, InstrumentId) for instrument_id in requested):
+        raise DataValidationError("universe values must be InstrumentId objects.")
     if len(set(requested)) != len(requested):
-        raise DataValidationError(
-            "universe cannot contain duplicate instruments."
-        )
+        raise DataValidationError("universe cannot contain duplicate instruments.")
     missing_metadata = [
-        instrument_id
-        for instrument_id in requested
-        if instrument_id not in instruments
+        instrument_id for instrument_id in requested if instrument_id not in instruments
     ]
     if missing_metadata:
         missing = ", ".join(map(str, missing_metadata))
-        raise DataValidationError(
-            f"instrument metadata is missing for: {missing}."
-        )
+        raise DataValidationError(f"instrument metadata is missing for: {missing}.")
     return requested

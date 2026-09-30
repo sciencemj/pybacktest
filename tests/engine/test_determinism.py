@@ -88,14 +88,8 @@ def test_generated_run_ids_differ_but_replay_outputs_are_equal() -> None:
     assert _normalized_fills(first) == _normalized_fills(second)
     assert first.snapshots == second.snapshots
     assert first.summary == second.summary
-    assert (
-        first.manifest.strategy_fingerprint
-        == second.manifest.strategy_fingerprint
-    )
-    assert (
-        first.manifest.dataset_fingerprint
-        == second.manifest.dataset_fingerprint
-    )
+    assert first.manifest.strategy_fingerprint == second.manifest.strategy_fingerprint
+    assert first.manifest.dataset_fingerprint == second.manifest.dataset_fingerprint
 
 
 @dataclass(frozen=True)
@@ -160,12 +154,9 @@ def test_interleaved_sessions_do_not_share_execution_or_ledger_state() -> None:
     )
 
     assert first_step.observation is not None
-    assert (
-        first_step.observation.portfolio.positions[
-            instrument_id
-        ].quantity
-        == Quantity.of("1")
-    )
+    assert first_step.observation.portfolio.positions[
+        instrument_id
+    ].quantity == Quantity.of("1")
     assert second_observation.active_orders == ()
     assert second_observation.portfolio.positions == {}
 
@@ -196,9 +187,7 @@ def test_local_adapter_identity_is_stable_manifest_metadata() -> None:
     engine = BacktestEngine(
         data_source=LocalSource(dataset),
         broker_factory=SimulatedBrokerFactory(
-            fill_model=NextBarOpenFill(
-                intrabar_policy=IntrabarPolicy.CONSERVATIVE
-            ),
+            fill_model=NextBarOpenFill(intrabar_policy=IntrabarPolicy.CONSERVATIVE),
             commission=NoCommission(),
             slippage=NoSlippage(),
             liquidity=NoLiquidityLimit(),
@@ -248,9 +237,7 @@ def test_interleaved_sessions_own_independent_seeded_rng_streams() -> None:
     engine = BacktestEngine(
         data_source=_StaticSource(dataset),
         broker_factory=SimulatedBrokerFactory(
-            fill_model=NextBarOpenFill(
-                intrabar_policy=IntrabarPolicy.CONSERVATIVE
-            ),
+            fill_model=NextBarOpenFill(intrabar_policy=IntrabarPolicy.CONSERVATIVE),
             commission=NoCommission(),
             slippage=_RandomTickSlippage(),
             liquidity=NoLiquidityLimit(),

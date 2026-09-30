@@ -66,9 +66,7 @@ def exact_subtract(left: Decimal, right: Decimal) -> Decimal:
     with decimal_context((left, right)) as context:
         result = context.subtract(left, right)
         if context.flags[Inexact]:
-            raise InvalidOperation(
-                "exact subtraction exceeds working precision"
-            )
+            raise InvalidOperation("exact subtraction exceeds working precision")
         return result
 
 
@@ -79,9 +77,7 @@ def exact_multiply(left: Decimal, right: Decimal) -> Decimal:
     with decimal_context((left, right)) as context:
         result = context.multiply(left, right)
         if context.flags[Inexact]:
-            raise InvalidOperation(
-                "exact multiplication exceeds working precision"
-            )
+            raise InvalidOperation("exact multiplication exceeds working precision")
         return result
 
 
@@ -104,21 +100,15 @@ def floor_quantity_to_lot(
         return notional
 
     absolute_notional = notional.copy_abs()
-    notional_digits, notional_exponent = _normalized_components(
-        absolute_notional
-    )
+    notional_digits, notional_exponent = _normalized_components(absolute_notional)
     price_digits, price_exponent = _normalized_components(price)
     lot_digits, lot_exponent = _normalized_components(lot_size)
     if any(
         len(digits) > _MAX_CANCELLATION_INPUT_DIGITS
         for digits in (notional_digits, price_digits, lot_digits)
     ):
-        raise InvalidOperation(
-            "lot-floor input exceeds cancellation resource bound"
-        )
-    with decimal_context(
-        (notional, price, lot_size)
-    ) as arithmetic:
+        raise InvalidOperation("lot-floor input exceeds cancellation resource bound")
+    with decimal_context((notional, price, lot_size)) as arithmetic:
         arithmetic.rounding = ROUND_DOWN
         raw_quantity = notional / price
         division_is_exact = not arithmetic.flags[Inexact]
@@ -139,9 +129,7 @@ def floor_quantity_to_lot(
     _integer_digits(lot_coefficient)
     denominator = price_coefficient * lot_coefficient
     _integer_digits(denominator)
-    exponent_delta = (
-        notional_exponent - price_exponent - lot_exponent
-    )
+    exponent_delta = notional_exponent - price_exponent - lot_exponent
     quotient_digits = _floor_scaled_ratio(
         numerator,
         denominator,
@@ -151,21 +139,13 @@ def floor_quantity_to_lot(
     quantity = exact_multiply(whole_lots, lot_size)
     final_digits, _ = _normalized_components(quantity)
     if len(final_digits) > _MAX_WORKING_PRECISION:
-        raise InvalidOperation(
-            "lot-floor result exceeds working precision"
-        )
-    return (
-        quantity.copy_negate() if is_negative else quantity
-    )
+        raise InvalidOperation("lot-floor result exceeds working precision")
+    return quantity.copy_negate() if is_negative else quantity
 
 
 def is_aligned(value: Decimal, increment: Decimal) -> bool:
     """Return exact Decimal divisibility without exponent expansion."""
-    if (
-        not value.is_finite()
-        or not increment.is_finite()
-        or increment <= _ZERO
-    ):
+    if not value.is_finite() or not increment.is_finite() or increment <= _ZERO:
         return False
     if value == _ZERO:
         return True
@@ -183,8 +163,7 @@ def is_aligned(value: Decimal, increment: Decimal) -> bool:
     divisor = _coefficient(increment_tuple.digits)
     if divisor == 1:
         return value_exponent >= increment_exponent or (
-            increment_exponent - value_exponent
-            <= _trailing_zeros(value_tuple.digits)
+            increment_exponent - value_exponent <= _trailing_zeros(value_tuple.digits)
         )
 
     exponent_delta = value_exponent - increment_exponent
@@ -192,12 +171,7 @@ def is_aligned(value: Decimal, increment: Decimal) -> bool:
         remainder = _digits_mod(value_tuple.digits, divisor)
         if remainder == 0:
             return True
-        return (
-            remainder
-            * pow(10, exponent_delta, divisor)
-            % divisor
-            == 0
-        )
+        return remainder * pow(10, exponent_delta, divisor) % divisor == 0
 
     required_zeros = -exponent_delta
     if required_zeros > _trailing_zeros(value_tuple.digits):
@@ -210,12 +184,8 @@ def _arithmetic_precision(values: Sequence[Decimal]) -> int:
     nonzero = tuple(value for value in values if value != _ZERO)
     if not nonzero:
         return _MIN_WORKING_PRECISION
-    operand_digits = sum(
-        len(value.as_tuple().digits) for value in nonzero
-    )
-    carry_digits = (
-        _small_integer_digit_count(len(nonzero)) + _GUARD_DIGITS
-    )
+    operand_digits = sum(len(value.as_tuple().digits) for value in nonzero)
+    carry_digits = _small_integer_digit_count(len(nonzero)) + _GUARD_DIGITS
     required = max(
         _MIN_WORKING_PRECISION,
         operand_digits + carry_digits,
@@ -253,9 +223,7 @@ def _normalized_components(
     decimal_tuple = value.as_tuple()
     exponent = decimal_tuple.exponent
     if not value.is_finite() or not isinstance(exponent, int):
-        raise InvalidOperation(
-            "normalized components require a finite Decimal"
-        )
+        raise InvalidOperation("normalized components require a finite Decimal")
     if value.is_zero():
         return (0,), 0
     trailing_zeros = _trailing_zeros(decimal_tuple.digits)
@@ -276,13 +244,8 @@ def _floor_scaled_ratio(
     denominator_digits = _integer_digits(denominator)
     if exponent_delta >= 0:
         scaled_length = len(numerator_digits) + exponent_delta
-        if (
-            scaled_length - len(denominator_digits)
-            > _MAX_WORKING_PRECISION
-        ):
-            raise InvalidOperation(
-                "lot count exceeds working precision"
-            )
+        if scaled_length - len(denominator_digits) > _MAX_WORKING_PRECISION:
+            raise InvalidOperation("lot count exceeds working precision")
         remainder = 0
         quotient_digits: list[int] = []
         for digit in chain(
@@ -295,25 +258,16 @@ def _floor_scaled_ratio(
             )
             if quotient_digit or quotient_digits:
                 quotient_digits.append(quotient_digit)
-                if (
-                    len(quotient_digits)
-                    > _MAX_WORKING_PRECISION
-                ):
-                    raise InvalidOperation(
-                        "lot count exceeds working precision"
-                    )
+                if len(quotient_digits) > _MAX_WORKING_PRECISION:
+                    raise InvalidOperation("lot count exceeds working precision")
         return tuple(quotient_digits or (0,))
 
     decimal_shift = -exponent_delta
-    scaled_denominator_length = (
-        len(denominator_digits) + decimal_shift
-    )
+    scaled_denominator_length = len(denominator_digits) + decimal_shift
     if scaled_denominator_length > len(numerator_digits):
         return (0,)
     if scaled_denominator_length == len(numerator_digits):
-        scaled_denominator_digits = (
-            denominator_digits + (0,) * decimal_shift
-        )
+        scaled_denominator_digits = denominator_digits + (0,) * decimal_shift
         if numerator_digits < scaled_denominator_digits:
             return (0,)
     scaled_denominator = denominator * 10**decimal_shift
@@ -329,9 +283,7 @@ def _integer_digits(
     remaining = abs(value)
     if remaining == 0:
         return (0,)
-    maximum_chunks = (
-        max_digits + _INTEGER_CHUNK_DIGITS - 1
-    ) // _INTEGER_CHUNK_DIGITS
+    maximum_chunks = (max_digits + _INTEGER_CHUNK_DIGITS - 1) // _INTEGER_CHUNK_DIGITS
     chunks: list[int] = []
     while remaining and len(chunks) < maximum_chunks:
         remaining, chunk = divmod(
@@ -340,25 +292,16 @@ def _integer_digits(
         )
         chunks.append(chunk)
     if remaining:
-        raise InvalidOperation(
-            "integer exceeds working precision"
-        )
+        raise InvalidOperation("integer exceeds working precision")
 
     highest_digits = _small_integer_digits(chunks.pop())
-    total_digits = (
-        len(highest_digits)
-        + len(chunks) * _INTEGER_CHUNK_DIGITS
-    )
+    total_digits = len(highest_digits) + len(chunks) * _INTEGER_CHUNK_DIGITS
     if total_digits > max_digits:
-        raise InvalidOperation(
-            "integer exceeds working precision"
-        )
+        raise InvalidOperation("integer exceeds working precision")
     digits = list(highest_digits)
     for chunk in reversed(chunks):
         chunk_digits = _small_integer_digits(chunk)
-        digits.extend(
-            (0,) * (_INTEGER_CHUNK_DIGITS - len(chunk_digits))
-        )
+        digits.extend((0,) * (_INTEGER_CHUNK_DIGITS - len(chunk_digits)))
         digits.extend(chunk_digits)
     return tuple(digits)
 

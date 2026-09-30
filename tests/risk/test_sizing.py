@@ -49,9 +49,7 @@ def snapshot(
     return portfolio_snapshot(
         cash=cash,
         positions=(
-            {}
-            if Decimal(str(position)) == Decimal("0")
-            else {resolved.id: position}
+            {} if Decimal(str(position)) == Decimal("0") else {resolved.id: position}
         ),
         prices={resolved.id: price},
         currency=resolved.quote_currency,
@@ -69,15 +67,9 @@ def context(
     current_snapshot = portfolio or snapshot(item=resolved)
     return risk_context(
         snapshot=current_snapshot,
-        prices={
-            resolved.id: price or Money.of("100", resolved.quote_currency)
-        },
+        prices={resolved.id: price or Money.of("100", resolved.quote_currency)},
         instruments={resolved.id: resolved},
-        tradable=(
-            tradable
-            if tradable is not None
-            else frozenset({resolved.id})
-        ),
+        tradable=(tradable if tradable is not None else frozenset({resolved.id})),
     )
 
 
@@ -307,9 +299,7 @@ def test_target_weight_uses_current_signed_position(
         cash="8000" if position == "20" else "12000",
         position=position,
     )
-    assert current.cash == Money.usd(
-        "8000" if position == "20" else "12000"
-    )
+    assert current.cash == Money.usd("8000" if position == "20" else "12000")
     assert current.equity == Money.usd("10000")
 
     order = DefaultOrderSizer().size(

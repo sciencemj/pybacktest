@@ -108,8 +108,7 @@ def calculation_context(*values: Decimal, minimum_precision: int = 64) -> Contex
     for value in values:
         _require_finite(value)
     precision = max(
-        [minimum_precision]
-        + [len(value.as_tuple().digits) + 16 for value in values]
+        [minimum_precision] + [len(value.as_tuple().digits) + 16 for value in values]
     )
     return _context(precision, exact=False)
 

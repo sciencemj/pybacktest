@@ -48,9 +48,7 @@ def snapshot(
     return portfolio_snapshot(
         cash=cash,
         positions=(
-            {}
-            if Decimal(str(position)) == Decimal("0")
-            else {resolved.id: position}
+            {} if Decimal(str(position)) == Decimal("0") else {resolved.id: position}
         ),
         prices={resolved.id: price},
         currency=resolved.quote_currency,
@@ -68,15 +66,9 @@ def context(
     current_snapshot = portfolio or snapshot(item=resolved)
     return risk_context(
         snapshot=current_snapshot,
-        prices={
-            resolved.id: price or Money.of("100", resolved.quote_currency)
-        },
+        prices={resolved.id: price or Money.of("100", resolved.quote_currency)},
         instruments={resolved.id: resolved},
-        tradable=(
-            tradable
-            if tradable is not None
-            else frozenset({resolved.id})
-        ),
+        tradable=(tradable if tradable is not None else frozenset({resolved.id})),
     )
 
 
@@ -403,9 +395,7 @@ def test_unknown_nontradable_and_missing_price_have_stable_first_codes():
     )
 
     assert policy.evaluate(order, unknown).codes == ("unknown_instrument",)
-    assert policy.evaluate(order, nontradable).codes == (
-        "instrument_not_tradable",
-    )
+    assert policy.evaluate(order, nontradable).codes == ("instrument_not_tradable",)
     assert policy.evaluate(order, missing).codes == ("missing_price",)
     assert item.id == order.instrument
 
@@ -584,15 +574,9 @@ def test_risk_rejects_invalid_order_lot_and_limit_tick_or_currency():
         allow_short=True,
     )
 
-    assert policy.evaluate(krw_order, context()).codes == (
-        "order_currency_mismatch",
-    )
-    assert policy.evaluate(tick_order, context()).codes == (
-        "invalid_limit_tick",
-    )
-    assert policy.evaluate(lot_order, context()).codes == (
-        "invalid_quantity_lot",
-    )
+    assert policy.evaluate(krw_order, context()).codes == ("order_currency_mismatch",)
+    assert policy.evaluate(tick_order, context()).codes == ("invalid_limit_tick",)
+    assert policy.evaluate(lot_order, context()).codes == ("invalid_quantity_lot",)
     assert base.id == krw_order.instrument
 
 
@@ -953,9 +937,7 @@ def test_position_cap_never_depends_on_ambient_precision_or_exceeds_exact_cap():
     )
     policy = LongShortRisk(
         max_leverage=Decimal("10"),
-        max_position_weight=Decimal(
-            "0.12345678901234567890123456789"
-        ),
+        max_position_weight=Decimal("0.12345678901234567890123456789"),
         allow_short=True,
     )
 
