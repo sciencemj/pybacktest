@@ -8,3 +8,4 @@ strategy_test_format.json
 .venv
 .superpowers/
 .worktrees/
+graft/
