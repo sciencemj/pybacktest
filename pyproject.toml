@@ -33,6 +33,14 @@ dev = [
     "ruff",
     "ty",
 ]
+ui = [
+    "pandas>=2.2",
+    "streamlit>=1.50",
+    "yfinance>=1.0",
+]
+
+[tool.uv]
+default-groups = ["dev", "ui"]
 
 [tool.pytest.ini_options]
 pythonpath = [".", "src"]

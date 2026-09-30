@@ -24,9 +24,9 @@ jobs:
           python-version: "3.11"
           enable-cache: true
       - name: Ruff lint
-        run: uv run --locked ruff check src tests benchmarks
+        run: uv run --locked ruff check src tests benchmarks streamlit_ui tests_ui streamlit_page.py
       - name: Ruff format
-        run: uv run --locked ruff format --check src tests benchmarks
+        run: uv run --locked ruff format --check src tests benchmarks streamlit_ui tests_ui streamlit_page.py
       - name: ty
         run: uv run --locked ty check src
 
@@ -63,8 +63,24 @@ jobs:
           enable-cache: true
       - name: Test suite without optional dependencies
         run: >-
-          uv run --locked --no-dev --with pytest --with hypothesis
+          uv run --locked --no-default-groups --with pytest --with hypothesis
           python -m pytest -q
+
+  ui:
+    name: Streamlit demo (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - name: Demo tests (no network)
+        run: uv run --locked python -m pytest tests_ui -q
 
   build:
     name: Package build
