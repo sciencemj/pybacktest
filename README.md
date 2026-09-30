@@ -867,6 +867,20 @@ assert result.manifest.strategy_identity == "docs.readme.BuyOnceThenHold"
 assert result.manifest.compiler_identity == "docs.readme.compiler.v1"
 ```
 
+## Streamlit demo
+
+A bilingual (English / 한국어) demo page backtests up to five same-currency
+Yahoo Finance tickers with a buy-and-hold, moving-average cross, or RSI
+strategy, and compares the result with buy-and-hold. It lives in
+`streamlit_ui/`, outside the core package, and uses only the public API.
+
+```bash
+uv run streamlit run streamlit_page.py
+```
+
+`uv sync` installs Streamlit and yfinance through the default `ui` dependency
+group; the published `pybacktest` package still depends only on NumPy.
+
 ## Roadmap
 
 The planned Pybacktest 0.2 runtime scope is feature-complete. This roadmap is
@@ -961,10 +975,11 @@ reference hardware.
 every pull request:
 
 ```bash
-uv run ruff check src tests benchmarks
-uv run ruff format --check src tests benchmarks
+uv run ruff check src tests benchmarks streamlit_ui tests_ui streamlit_page.py
+uv run ruff format --check src tests benchmarks streamlit_ui tests_ui streamlit_page.py
 uv run ty check src
 uv run python -m pytest -q  # includes the executable README examples
+uv run python -m pytest tests_ui -q  # Streamlit demo, no network
 uv build
 ```
 
