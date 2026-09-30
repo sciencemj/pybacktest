@@ -52,14 +52,21 @@ def test_tick_size_for_currency(currency, tick):
     assert tick_size_for(currency) == tick
 
 
-def test_clean_frame_rounds_to_tick_and_converts_to_naive_utc():
+def test_clean_frame_rounds_to_tick_and_labels_bars_by_local_date():
     frame = make_frame([100.004, 100.006], tz="America/New_York")
     cleaned = clean_frame(frame, Decimal("0.01"))
     assert list(cleaned.columns) == ["Open", "High", "Low", "Close", "Volume"]
     assert cleaned["Close"].tolist() == [100.0, 100.01]
     assert cleaned.index.tz is None
-    # 2022-01-03 00:00 New York is 05:00 UTC.
-    assert cleaned.index[0] == pd.Timestamp("2022-01-03 05:00")
+    assert cleaned.index[0] == pd.Timestamp("2022-01-03 00:00")
+
+
+def test_clean_frame_keeps_the_local_date_east_of_utc():
+    # 2022-01-03 00:00 in Seoul is 2022-01-02 15:00 UTC; converting to UTC
+    # would move the bar to the previous day, outside a period starting there.
+    frame = make_frame([71000.0, 71100.0], tz="Asia/Seoul")
+    cleaned = clean_frame(frame, Decimal("1"))
+    assert cleaned.index[0] == pd.Timestamp("2022-01-03 00:00")
 
 
 def test_clean_frame_rounds_krw_to_whole_won():

@@ -85,14 +85,14 @@ def fetch_history(
 
 
 def clean_frame(frame: pd.DataFrame, tick: Decimal) -> pd.DataFrame:
-    """Keep OHLCV, drop incomplete rows, round prices, index by naive UTC."""
+    """Keep OHLCV, drop incomplete rows, round prices, index by local date."""
     missing = [column for column in OHLCV if column not in frame.columns]
     if missing:
         return pd.DataFrame(columns=list(OHLCV))
     cleaned = frame.loc[:, list(OHLCV)].astype("float64").dropna()
-    index = pd.DatetimeIndex(cleaned.index)
-    index = index.tz_localize("UTC") if index.tz is None else index.tz_convert("UTC")
-    cleaned.index = index.tz_localize(None)
+    # Daily bars are labelled by their exchange-local calendar date. Converting
+    # to UTC would move bars east of UTC (Seoul, Tokyo) to the previous day.
+    cleaned.index = pd.DatetimeIndex(cleaned.index).tz_localize(None).normalize()
     prices = ["Open", "High", "Low", "Close"]
     for column in prices:
         cleaned[column] = [_round_to_tick(value, tick) for value in cleaned[column]]

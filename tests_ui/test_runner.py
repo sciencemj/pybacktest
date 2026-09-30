@@ -130,3 +130,24 @@ def test_holiday_in_one_series_does_not_break_the_union_calendar():
     report = run_backtest(_config("ma_cross", {"fast": 3, "slow": 10}), histories)
     assert report.info["bars"] == {"YF:AAPL": 199, "YF:MSFT": 200}
     assert len(report.equity) == 200
+
+
+def test_first_bar_on_the_start_date_east_of_utc_is_inside_the_period():
+    histories = {
+        "005930.KS": TickerHistory(
+            make_frame(
+                np.linspace(70000, 90000, 100), start="2022-01-03", tz="Asia/Seoul"
+            ),
+            "KRW",
+        )
+    }
+    config = RunConfig(
+        tickers=("005930.KS",),
+        start=date(2022, 1, 3),
+        end=date(2022, 6, 30),
+        strategy="buy_and_hold",
+        initial_cash=Decimal("10000000"),
+    )
+    report = run_backtest(config, histories)
+    assert report.info["currency"] == "KRW"
+    assert len(report.fills) == 1
