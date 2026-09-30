@@ -50,12 +50,13 @@ any change to `src/pybacktest`. `legacy/v1/ui` stays untouched.
 streamlit_page.py          # Cloud entrypoint: puts src/ and repo root on sys.path, calls app.main()
 streamlit_ui/
   __init__.py
+  errors.py                # DemoInputError(code, detail)
   i18n.py                  # STRINGS = {"en": {...}, "ko": {...}}; t(key, lang)
   market_data.py           # fetch_history (network) + pure validation/conversion
   strategies.py            # BuyAndHold, MovingAverageCrossAll, RsiReversion
   runner.py                # RunConfig -> engine runs -> RunReport
   app.py                   # Streamlit widgets, charts, tables only
-tests_ui/                  # UI tests; no network
+tests_ui/                  # UI tests; no network (helpers in tests_ui/support.py)
 ```
 
 **Dependencies.** `pyproject.toml` gains a `ui` dependency group
@@ -91,7 +92,8 @@ never imported stays meaningful.
 3. **Validate** (pure). Each failure raises `DemoInputError(code, detail)`,
    whose `code` maps to a localized message:
    - `no_tickers`, `too_many_tickers` (more than five);
-   - `empty_history` naming the ticker(s) with no rows;
+   - `empty_history` naming the ticker(s) with no rows, or whose currency
+     yfinance could not report;
    - `mixed_currency` listing each ticker's currency;
    - `insufficient_history` when fewer bars remain than the chosen strategy's
      warm-up requires plus a margin of 5 bars.
@@ -102,8 +104,12 @@ never imported stays meaningful.
      otherwise; OHLC are rounded to the tick with `ROUND_HALF_EVEN`, because
      the core risk policy rejects marks that are not tick-aligned;
    - `lot_size = 1`, instrument `timezone = UTC`;
-   - rows with any NaN in OHLCV are dropped; the index is converted to UTC and
-     then to naive `datetime64[ns]`;
+   - after rounding, `High` becomes the maximum and `Low` the minimum of the
+     four prices: adjusted yfinance bars (seen on `005930.KS` and
+     `000660.KS`) can leave open or close outside `[low, high]`, which the
+     core rejects;
+   - rows with any NaN in OHLCV, or a non-positive low, are dropped; the
+     index is converted to UTC and then to naive `datetime64[ns]`;
    - one `BarSeries` per instrument, combined into a `MarketDataSet` with
      `Timeframe.days(1)`.
 5. **Calendar.** `CalendarPolicy.union()`, so instruments with different
@@ -121,13 +127,19 @@ for example `fast:YF:AAPL`, so plans for several instruments never collide.
 |---|---|---|---|
 | `BuyAndHold` | Target `1/N` when the instrument has no position and no active order; otherwise emit nothing. | — | 1 |
 | `MovingAverageCrossAll` | Per instrument: fast SMA crosses above slow → `1/N`; crosses below → `0`. Same crossover semantics as the core `MovingAverageCross` (current and one-bar-lagged SMAs). | `fast < slow` | `slow + 1` |
-| `RsiReversion` | Per instrument: RSI below `lower` → `1/N`; RSI above `upper` → `0`. | `period` 2–30, `lower < upper` within 1–99 | `period + 1` |
+| `RsiReversion` | Per instrument: RSI below `lower` while flat → `1/N`; RSI above `upper` while holding → `0`. | `period` 2–30, `lower < upper` within 1–99 | `period + 1` |
 
 `RsiReversion` computes a simple-average RSI (Cutler's RSI) in `on_bar` from
 close lags `0..period`, declared with `FeatureBuilder.lag` so they follow each
 instrument's own clock. With average gain `G` and average loss `L` over the
 last `period` differences: `L == 0` gives RSI `100` (or `50` when `G == 0` as
 well); otherwise `RSI = 100 - 100 / (1 + G / L)`. Any NaN input emits nothing.
+
+`BuyAndHold` and `RsiReversion` read `context.portfolio.positions` (a
+mapping of `InstrumentId` to `Quantity`) and `context.active_orders`, and emit
+nothing for an instrument with a pending order or already in the target
+state. Without that, a persistent RSI reading would re-target every bar and
+generate daily rebalancing trades.
 
 Invalid parameters raise the core `ConfigurationError` at construction, so the
 runner reports them like any other configuration error.
@@ -145,7 +157,9 @@ engine, and runs twice on the same dataset: the chosen strategy and a
 - Broker: `SimulatedBrokerFactory(fill_model=NextBarOpenFill(IntrabarPolicy.CONSERVATIVE), commission=NoCommission() | PerShareCommission(rate), slippage=NoSlippage(), liquidity=NoLiquidityLimit(), borrow_cost=NoBorrowCost())`.
 - Risk: `LongShortRisk(max_leverage=Decimal("1"), max_position_weight=None, allow_short=False)`.
 - Simulation: universe, period `[start, end + 1 day)` in UTC, daily timeframe,
-  union calendar, `Money.of(initial_cash, currency)`, `seed=0`,
+  `CalendarPolicy.union(max_staleness_bars=5)` — a held instrument may miss
+  up to five union bars (a local holiday or a bar yfinance dropped); the
+  default of `0` fails the whole run on the first gap, `Money.of(initial_cash, currency)`, `seed=0`,
   `MetricsConfig(risk_free_rate=Decimal("0"), annualization_periods=252)`.
 
 `RunReport` holds display-ready data built by pure functions:
