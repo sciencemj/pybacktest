@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
 from zoneinfo import ZoneInfo
 
@@ -71,11 +71,20 @@ def fetch_history(
 ) -> dict[str, TickerHistory]:
     """Download adjusted daily bars for each ticker (network access)."""
     import yfinance as yf
+    from yfinance.exceptions import YFRateLimitError
 
     histories: dict[str, TickerHistory] = {}
     for ticker in tickers:
         handle = yf.Ticker(ticker)
-        frame = handle.history(start=start, end=end, auto_adjust=True)
+        try:
+            # yfinance treats ``end`` as exclusive; the chosen day is inclusive.
+            frame = handle.history(
+                start=start,
+                end=end + timedelta(days=1),
+                auto_adjust=True,
+            )
+        except YFRateLimitError as error:
+            raise DemoInputError("rate_limited") from error
         try:
             currency = str(handle.fast_info["currency"] or "").upper()
         except Exception:  # yfinance raises assorted errors for unknown tickers
@@ -108,15 +117,21 @@ def _round_to_tick(value: float, tick: Decimal) -> float:
     return float(steps * tick)
 
 
+def require_data(histories: Mapping[str, TickerHistory]) -> None:
+    """Raise ``empty_history`` for tickers with no bars or no currency."""
+    missing = [
+        ticker
+        for ticker, item in histories.items()
+        if item.frame.empty or not item.currency
+    ]
+    if missing:
+        raise DemoInputError("empty_history", ", ".join(missing))
+
+
 def validate_histories(histories: Mapping[str, TickerHistory]) -> str:
     """Return the single shared currency, or raise ``DemoInputError``."""
-    empty = [ticker for ticker, item in histories.items() if item.frame.empty]
-    if empty:
-        raise DemoInputError("empty_history", ", ".join(empty))
+    require_data(histories)
     currencies = {ticker: item.currency for ticker, item in histories.items()}
-    unknown = [ticker for ticker, currency in currencies.items() if not currency]
-    if unknown:
-        raise DemoInputError("empty_history", ", ".join(unknown))
     if len(set(currencies.values())) != 1:
         detail = ", ".join(f"{ticker}={code}" for ticker, code in currencies.items())
         raise DemoInputError("mixed_currency", detail)

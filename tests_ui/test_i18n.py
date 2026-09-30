@@ -10,6 +10,8 @@ ERROR_CODES = (
     "mixed_currency",
     "insufficient_history",
     "invalid_period",
+    "rate_limited",
+    "insufficient_cash",
 )
 
 

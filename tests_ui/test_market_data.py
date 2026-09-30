@@ -1,4 +1,6 @@
+from datetime import date
 from decimal import Decimal
+from typing import ClassVar
 
 import numpy as np
 import pandas as pd
@@ -10,6 +12,7 @@ from streamlit_ui.market_data import (
     MAX_TICKERS,
     TickerHistory,
     clean_frame,
+    fetch_history,
     parse_tickers,
     tick_size_for,
     to_market_dataset,
@@ -148,3 +151,44 @@ def test_to_market_dataset_treats_unknown_currency_as_missing_data():
         to_market_dataset(histories, min_bars=10)
     assert caught.value.code == "empty_history"
     assert caught.value.detail == "AAPL"
+
+
+class _FakeTicker:
+    """Stand-in for ``yfinance.Ticker`` that records how it was called."""
+
+    calls: ClassVar[list[dict[str, object]]] = []
+    error: ClassVar[Exception | None] = None
+
+    def __init__(self, ticker: str) -> None:
+        self.ticker = ticker
+        self.fast_info = {"currency": "USD"}
+
+    def history(self, **kwargs):
+        type(self).calls.append(kwargs)
+        if type(self).error is not None:
+            raise type(self).error
+        return make_frame(random_walk(1, bars=30))
+
+
+@pytest.fixture
+def fake_yfinance(monkeypatch):
+    _FakeTicker.calls = []
+    _FakeTicker.error = None
+    monkeypatch.setattr("yfinance.Ticker", _FakeTicker)
+    return _FakeTicker
+
+
+def test_fetch_history_end_date_is_inclusive(fake_yfinance):
+    # yfinance treats ``end`` as exclusive, so the chosen day must be widened.
+    fetch_history(("AAPL",), date(2024, 1, 2), date(2024, 3, 8))
+    assert fake_yfinance.calls[0]["start"] == date(2024, 1, 2)
+    assert fake_yfinance.calls[0]["end"] == date(2024, 3, 9)
+
+
+def test_fetch_history_maps_rate_limit_to_a_typed_error(fake_yfinance):
+    from yfinance.exceptions import YFRateLimitError
+
+    fake_yfinance.error = YFRateLimitError()
+    with pytest.raises(DemoInputError) as caught:
+        fetch_history(("AAPL",), date(2024, 1, 2), date(2024, 3, 8))
+    assert caught.value.code == "rate_limited"

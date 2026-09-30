@@ -2,6 +2,7 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
+import pandas as pd
 import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
@@ -107,3 +108,27 @@ def test_changing_only_the_strategy_reuses_cached_data():
 )
 def test_format_metric(name, value, text):
     assert format_metric(name, value) == text
+
+
+def test_date_inputs_allow_long_histories():
+    app = _app()
+    assert str(app.sidebar.date_input(key="start").min) == "1970-01-01"
+    assert str(app.sidebar.date_input(key="end").max) == str(date.today())
+
+
+def test_a_failed_empty_download_is_not_cached():
+    def empty(tickers, start, end):
+        del start, end
+        return {ticker: TickerHistory(pd.DataFrame(), "") for ticker in tickers}
+
+    with mock.patch(
+        FETCH,
+        side_effect=[empty(("AAPL", "MSFT"), 0, 0), fake_fetch(("AAPL", "MSFT"), 0, 0)],
+    ) as fetch:
+        app = _app()
+        app.sidebar.button[0].click().run()
+        assert "No data" in app.error[0].value
+        app.sidebar.button[0].click().run()
+    assert fetch.call_count == 2
+    assert not app.error
+    assert len(app.metric) == 4

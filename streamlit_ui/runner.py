@@ -32,6 +32,7 @@ from pybacktest import (
     SimulationRequest,
     Timeframe,
 )
+from streamlit_ui.errors import DemoInputError
 from streamlit_ui.market_data import TickerHistory, instrument_id, to_market_dataset
 from streamlit_ui.strategies import (
     BuyAndHold,
@@ -41,9 +42,10 @@ from streamlit_ui.strategies import (
 )
 
 STRATEGY_NAMES = ("buy_and_hold", "ma_cross", "rsi")
-# A held instrument may miss up to this many union bars (a local holiday or a
-# bar yfinance dropped) before the core rejects its stale mark.
-MAX_STALENESS_BARS = 5
+# A held instrument may miss up to this many union bars (a local holiday, a
+# trading halt, or a bar yfinance dropped) before the core rejects its stale
+# mark. The limit only bounds how long a held position keeps its last price.
+MAX_STALENESS_BARS = 30
 METRIC_ROWS = (
     MetricName.TOTAL_RETURN,
     MetricName.CAGR,
@@ -161,6 +163,23 @@ def _simulation(config: RunConfig, currency: str) -> SimulationRequest:
     )
 
 
+def require_affordable(dataset: MarketDataSet, config: RunConfig) -> None:
+    """Reject a budget too small to ever buy one share of an instrument.
+
+    Each instrument targets ``1/N`` of the cash and shares are whole, so an
+    instrument whose lowest close exceeds that budget can never be bought and
+    would silently produce an empty result.
+    """
+    budget = config.initial_cash / len(config.tickers)
+    unaffordable = []
+    for ticker in config.tickers:
+        lowest = Decimal(repr(float(dataset.series[instrument_id(ticker)].close.min())))
+        if lowest > budget:
+            unaffordable.append(f"{ticker}: {lowest:f} > {budget:.2f}")
+    if unaffordable:
+        raise DemoInputError("insufficient_cash", "; ".join(unaffordable))
+
+
 def run_backtest(
     config: RunConfig,
     histories: Mapping[str, TickerHistory],
@@ -169,6 +188,7 @@ def run_backtest(
     strategy = build_strategy(config)
     benchmark = BuyAndHold(instruments=strategy.instruments)
     dataset, currency = to_market_dataset(histories, min_bars=strategy.warmup_bars)
+    require_affordable(dataset, config)
     engine = _engine(dataset, config)
     simulation = _simulation(config, currency)
     result = engine.run(BacktestRequest(strategy=strategy, simulation=simulation))

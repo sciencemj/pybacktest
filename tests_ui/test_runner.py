@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from pybacktest import PybacktestError
+from streamlit_ui.errors import DemoInputError
 from streamlit_ui.market_data import TickerHistory
 from streamlit_ui.runner import METRIC_ROWS, RunConfig, run_backtest
 from tests_ui.support import make_frame
@@ -151,3 +152,44 @@ def test_first_bar_on_the_start_date_east_of_utc_is_inside_the_period():
     report = run_backtest(config, histories)
     assert report.info["currency"] == "KRW"
     assert len(report.fills) == 1
+
+
+def test_price_above_the_per_instrument_budget_is_a_typed_error():
+    histories = {
+        "005930.KS": TickerHistory(
+            make_frame(np.linspace(70000, 90000, 100), tz="Asia/Seoul"), "KRW"
+        )
+    }
+    config = RunConfig(
+        tickers=("005930.KS",),
+        start=START,
+        end=END,
+        strategy="buy_and_hold",
+        initial_cash=Decimal("10000"),
+    )
+    with pytest.raises(DemoInputError) as caught:
+        run_backtest(config, histories)
+    assert caught.value.code == "insufficient_cash"
+    assert "005930.KS" in caught.value.detail
+
+
+def test_only_the_unaffordable_instrument_is_named():
+    histories = {
+        "AAPL": TickerHistory(make_frame(np.linspace(100, 120, 100)), "USD"),
+        "BIG": TickerHistory(make_frame(np.linspace(90000, 95000, 100)), "USD"),
+    }
+    with pytest.raises(DemoInputError) as caught:
+        run_backtest(_config("buy_and_hold", {}, tickers=("AAPL", "BIG")), histories)
+    assert "BIG" in caught.value.detail
+    assert "AAPL" not in caught.value.detail
+
+
+def test_a_held_instrument_may_miss_twenty_bars():
+    gappy = make_frame(np.linspace(100, 120, 200))
+    gappy = gappy.drop(gappy.index[60:80])
+    histories = {
+        "AAPL": TickerHistory(gappy, "USD"),
+        "MSFT": TickerHistory(make_frame(np.linspace(50, 70, 200)), "USD"),
+    }
+    report = run_backtest(_config("buy_and_hold", {}), histories)
+    assert report.info["bars"] == {"YF:AAPL": 180, "YF:MSFT": 200}

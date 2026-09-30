@@ -20,16 +20,21 @@ PERCENT_METRICS = frozenset(
 HEADLINE_METRICS = ("total_return", "cagr", "sharpe", "maximum_drawdown")
 DEFAULT_TICKERS = "AAPL, MSFT"
 DEFAULT_YEARS = 5
+MIN_DATE = date(1970, 1, 1)
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=3600, max_entries=64, show_spinner=False)
 def _cached_history(
     tickers: tuple[str, ...],
     start: date,
     end: date,
 ) -> dict[str, market_data.TickerHistory]:
     # Looked up on the module at call time so tests can patch it.
-    return market_data.fetch_history(tickers, start, end)
+    histories = market_data.fetch_history(tickers, start, end)
+    # yfinance returns empty frames on transient failures. Raising here keeps
+    # st.cache_data from caching that failure for the whole TTL.
+    market_data.require_data(histories)
+    return histories
 
 
 def format_metric(name: str, value: float | None) -> str:
@@ -85,12 +90,25 @@ def _sidebar(lang: str) -> RunConfig | None:
             start = st.date_input(
                 t("sidebar.start", lang),
                 today - timedelta(days=365 * DEFAULT_YEARS),
+                min_value=MIN_DATE,
+                max_value=today,
                 key="start",
             )
-            end = st.date_input(t("sidebar.end", lang), today, key="end")
+            end = st.date_input(
+                t("sidebar.end", lang),
+                today,
+                min_value=MIN_DATE,
+                max_value=today,
+                key="end",
+            )
             params = _strategy_params(strategy, lang)
             cash = st.number_input(
-                t("sidebar.initial_cash", lang), 100.0, 1e12, 10000.0, key="cash"
+                t("sidebar.initial_cash", lang),
+                100.0,
+                1e12,
+                10000.0,
+                help=t("sidebar.initial_cash_help", lang),
+                key="cash",
             )
             commission = st.number_input(
                 t("sidebar.commission", lang), 0.0, 100.0, 0.0, key="commission"

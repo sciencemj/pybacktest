@@ -23,6 +23,11 @@ STRINGS: dict[str, dict[str, str]] = {
         "sidebar.end": "End date",
         "sidebar.strategy": "Strategy",
         "sidebar.initial_cash": "Initial cash",
+        "sidebar.initial_cash_help": (
+            "In the tickers' currency. Cash is split equally, so it must cover "
+            "at least one share of each ticker (KRW and JPY stocks need "
+            "millions)."
+        ),
         "sidebar.commission": "Commission per share",
         "sidebar.run": "Run backtest",
         "strategy.buy_and_hold": "Buy & Hold",
@@ -61,6 +66,13 @@ STRINGS: dict[str, dict[str, str]] = {
             "Not enough bars for this strategy ({detail}). Choose a longer period."
         ),
         "error.invalid_period": "The start date must be before the end date.",
+        "error.rate_limited": (
+            "Yahoo Finance is rate-limiting requests. Please try again in a minute."
+        ),
+        "error.insufficient_cash": (
+            "Initial cash is too small to buy one share per ticker "
+            "(price > cash per ticker): {detail}. Increase the initial cash."
+        ),
         "error.engine": "The engine rejected this configuration: {detail}",
         "error.unexpected": "Something unexpected went wrong.",
         "error.details": "Details",
@@ -83,6 +95,10 @@ STRINGS: dict[str, dict[str, str]] = {
         "sidebar.end": "종료일",
         "sidebar.strategy": "전략",
         "sidebar.initial_cash": "초기 자금",
+        "sidebar.initial_cash_help": (
+            "티커의 통화 기준이에요. 자금은 종목별로 똑같이 나뉘므로 종목마다 "
+            "최소 1주는 살 수 있어야 해요 (원화·엔화 종목은 수백만 단위가 필요해요)."
+        ),
         "sidebar.commission": "주당 수수료",
         "sidebar.run": "백테스트 실행",
         "strategy.buy_and_hold": "매수 후 보유",
@@ -119,6 +135,13 @@ STRINGS: dict[str, dict[str, str]] = {
             "이 전략에 필요한 봉 수가 부족해요 ({detail}). 기간을 늘려주세요."
         ),
         "error.invalid_period": "시작일은 종료일보다 앞서야 해요.",
+        "error.rate_limited": (
+            "야후 파이낸스가 요청을 제한하고 있어요. 잠시 후 다시 시도해 주세요."
+        ),
+        "error.insufficient_cash": (
+            "초기 자금이 너무 적어서 종목마다 1주도 살 수 없어요 "
+            "(가격 > 종목당 자금): {detail}. 초기 자금을 늘려주세요."
+        ),
         "error.engine": "엔진이 이 설정을 거부했어요: {detail}",
         "error.unexpected": "예상치 못한 오류가 발생했어요.",
         "error.details": "상세 정보",

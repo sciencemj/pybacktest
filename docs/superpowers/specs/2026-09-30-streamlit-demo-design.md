@@ -89,9 +89,15 @@ never imported stays meaningful.
    the currency from `fast_info["currency"]`. It returns plain
    `{ticker: (DataFrame, currency)}` data so the pure functions below can be
    tested with fabricated frames.
-3. **Validate** (pure). Each failure raises `DemoInputError(code, detail)`,
+3. **Validate** (pure). Empty or currency-less downloads are rejected inside the
+   cached fetch wrapper so `st.cache_data` never caches a transient failure.
+   Fetch passes `end + 1 day` because yfinance's `end` is exclusive. Each failure raises `DemoInputError(code, detail)`,
    whose `code` maps to a localized message:
    - `no_tickers`, `too_many_tickers` (more than five);
+   - `rate_limited` when Yahoo Finance rate-limits the download;
+   - `insufficient_cash` when an instrument's lowest close exceeds its `cash / N`
+     budget, because whole shares could never be bought and the run would be
+     silently empty (checked in the runner);
    - `empty_history` naming the ticker(s) with no rows, or whose currency
      yfinance could not report;
    - `mixed_currency` listing each ticker's currency;
@@ -160,8 +166,9 @@ engine, and runs twice on the same dataset: the chosen strategy and a
 - Broker: `SimulatedBrokerFactory(fill_model=NextBarOpenFill(IntrabarPolicy.CONSERVATIVE), commission=NoCommission() | PerShareCommission(rate), slippage=NoSlippage(), liquidity=NoLiquidityLimit(), borrow_cost=NoBorrowCost())`.
 - Risk: `LongShortRisk(max_leverage=Decimal("1"), max_position_weight=None, allow_short=False)`.
 - Simulation: universe, period `[start, end + 1 day)` in UTC, daily timeframe,
-  `CalendarPolicy.union(max_staleness_bars=5)` — a held instrument may miss
-  up to five union bars (a local holiday or a bar yfinance dropped); the
+  `CalendarPolicy.union(max_staleness_bars=30)` — a held instrument may miss
+  up to thirty union bars (a local holiday, a trading halt, or a bar yfinance
+  dropped); the
   default of `0` fails the whole run on the first gap, `Money.of(initial_cash, currency)`, `seed=0`,
   `MetricsConfig(risk_free_rate=Decimal("0"), annualization_periods=252)`.
 
